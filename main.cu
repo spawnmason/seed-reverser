@@ -122,15 +122,12 @@ __device__ int64_t reverseWoodlandZGivenX(int64_t seed48Bits, int chunkX) {
 }
 
 __device__ bool isInRange(int64_t x, int64_t z) {
-    return x >= -WOODLAND_BOUNDS && x <= WOODLAND_BOUNDS && z >= -WOODLAND_BOUNDS && z <= WOODLAND_BOUNDS;
+    return x >= -WOODLAND_BOUNDS & x <= WOODLAND_BOUNDS & z >= -WOODLAND_BOUNDS & z <= WOODLAND_BOUNDS;
 }
 
 __global__ void tryComputeSteps(const int16_t* mansionTable, const LcgParams lcg, int64_t* seeds, int kernelsRan) {
     auto tid = blockIdx.x * blockDim.x + threadIdx.x;
-    //int step = gridDim.x * blockDim.x;
     auto seed = seeds[tid];
-    const auto inputSeed = seed;
-    //seed = nextSeed(seed, lcg);
     seeds[tid] = nextSeed(seed, lcg); // update the input seeds for the next iteration
 
     const auto x = mansionTable[seed & LOWER_32_MASK];
