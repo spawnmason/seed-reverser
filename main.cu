@@ -14,12 +14,12 @@ void printCudaVersion() {
     printf("CUDA driver version: %d.%d\n", cudaVersion / 1000, (cudaVersion % 100) / 10);
 }
 
-std::vector<uint64_t> readSeeds(char* path) {
+std::vector<int64_t> readSeeds(char* path) {
     auto file = std::ifstream{path};
-    std::vector<uint64_t> seeds;
+    std::vector<int64_t> seeds;
     std::string line;
     while (std::getline(file, line)) {
-        uint64_t num;
+        int64_t num;
         if (std::from_chars(line.c_str(), line.c_str() + line.size(), num).ec != std::errc{}) {
             std::cout << "Failed to parse \"" << line << "\" as a uint64" << std::endl;
             exit(1);
@@ -178,9 +178,9 @@ int main(int argc, char** argv) {
     printCudaVersion();
     if (argc < 2) {
         std::cout << "Expected file argument" << std::endl;
-        //return 1;
+        return 1;
     }
-    //auto seeds = readSeeds(argv[1]);
+    auto seeds = readSeeds(argv[1]);
 
     void* deviceMansionTable;
     auto err = cudaMalloc(&deviceMansionTable, INDEX_SIZE * sizeof(int16_t));
@@ -206,30 +206,34 @@ int main(int argc, char** argv) {
     printf("Warp size: %d\n", warpSizeUwu);
     int threadCount = numMPs * warpSizeUwu;
 
-    const auto testSeed = 250517125837036LL;
-    auto seed = testSeed;
-    std::vector<int64_t> inputSeeds;
-    for (int i = 0; i < threadCount; i++) {
-        inputSeeds.push_back(seed);
-        seed = prevSeed(seed);
+    auto startTime = std::chrono::steady_clock::now();
+    for (const auto inputSeed : seeds) {
+        //const auto testSeed = 250517125837036LL;
+        auto seed = inputSeed;
+        std::vector<int64_t> inputSeeds;
+        for (int i = 0; i < threadCount; i++) {
+            inputSeeds.push_back(seed);
+            seed = prevSeed(seed);
+        }
+        auto* deviceInputSeeds = uploadBuffer(inputSeeds.data(), inputSeeds.size());
+
+        Result result = {false, 2'000'000'000};
+        cudaMemcpyToSymbol(reverseResult, &result, sizeof(Result));
+        //auto t1 = std::chrono::steady_clock::now();
+        int i = 0;
+        do {
+            tryComputeSteps<<<numMPs, warpSizeUwu>>>((int16_t*) deviceMansionTable, computeLcgJump(-threadCount), deviceInputSeeds, i * threadCount);
+            cudaDeviceSynchronize();
+
+            cudaMemcpyFromSymbol(&result, reverseResult, sizeof(Result));
+            i++;
+        } while (!result.done);
+        //std::cout << result.steps << " steps yay!!!" << std::endl;
+        //auto micros = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t1);
+        //std::cout << "reversed seed in " << micros.count() << "us" << std::endl;
     }
-    auto* deviceInputSeeds = uploadBuffer(inputSeeds.data(), inputSeeds.size());
-
-    Result result = {false, 2'000'000'000};
-    cudaMemcpyToSymbol(reverseResult, &result, sizeof(Result));
-    t1 = std::chrono::steady_clock::now();
-    int i = 0;
-    do {
-        tryComputeSteps<<<numMPs, warpSizeUwu>>>((int16_t*) deviceMansionTable, computeLcgJump(-threadCount), deviceInputSeeds, i * threadCount);
-        cudaDeviceSynchronize();
-
-        cudaMemcpyFromSymbol(&result, reverseResult, sizeof(Result));
-        i++;
-    } while (!result.done);
-    std::cout << result.steps << " steps yay!!!" << std::endl;
-    auto micros = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t1);
-    std::cout << "reversed seed in " << micros.count() << "ms" << std::endl;
-    //verifyResult(result, testSeed);
+    auto execTime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime).count();
+    std::cout << "Reversed " << seeds.size() << " seeds in " << execTime << "ms" << std::endl;
 
     return 0;
 }
