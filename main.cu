@@ -5,6 +5,12 @@
 #include <chrono>
 #include <cassert>
 #include <optional>
+#include <fstream>
+
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 void printCudaVersion() {
     int cudaVersion;
@@ -65,8 +71,10 @@ std::optional<std::pair<int, int>> woodlandValid(int64_t candidate) {
 }
 
 std::vector<int16_t> createSeedTable() {
+    std::cout << "Creating seed table" << std::endl;
+    auto t1 = std::chrono::steady_clock::now();
     // Initialize with max 16 bit int, which is out of the range of valid mansion coords
-    std::vector<int16_t> out(INDEX_SIZE, 32767);
+    std::vector<int16_t> out(INDEX_SIZE, 0);
 
     for (int x = -WOODLAND_BOUNDS; x <= WOODLAND_BOUNDS; x++) {
         for (int z = -WOODLAND_BOUNDS; z <= WOODLAND_BOUNDS; z++) {
@@ -74,6 +82,9 @@ std::vector<int16_t> createSeedTable() {
             out[seed & LOWER_32_MASK] = (int16_t) x;
         }
     }
+    auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t1);
+    std::cout << "Created seed table in " << millis.count() << "ms" << std::endl;
+
     return out;
 }
 
@@ -204,6 +215,31 @@ void verifyResult(Result result, int64_t inputSeed) {
     }
 }
 
+std::optional<void*> mmapTable() {
+    int fd = open("mansion_table", O_RDONLY);
+    if (fd == -1) {
+        return {};
+    }
+
+    struct stat sb;
+    if (fstat(fd, &sb) == -1) {
+        std::cerr << "Failed to get file size\n";
+        return {};
+    }
+    const auto size = (size_t) sb.st_size;
+    if (size != INDEX_SIZE * sizeof(int16_t)) {
+        std::cerr << "table exists but is not " << INDEX_SIZE * sizeof(int16_t) << " bytes" << std::endl;
+        return {};
+    }
+
+    void* addr = mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (addr == MAP_FAILED) {
+        std::cerr << "Failed to mmap file\n";
+        return {};
+    }
+    return {addr};
+}
+
 int main(int argc, char** argv) {
     printCudaVersion();
     if (argc < 2) {
@@ -219,14 +255,28 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::cout << "Creating seed table" << std::endl;
-    auto t1 = std::chrono::steady_clock::now();
-    auto table = createSeedTable();
+
+    std::vector<int16_t> seedTable;
+    if (auto file = mmapTable(); file) {
+        std::cout << "Loading seed table from disk" << std::endl;
+        auto t1 = std::chrono::steady_clock::now();
+        seedTable.assign(INDEX_SIZE, 0);
+        memcpy(seedTable.data(), *file, INDEX_SIZE * sizeof(int16_t));
+        auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t1);
+        std::cout << "Loaded seed table in " << millis.count() << "ms" << std::endl;
+    } else {
+        seedTable = createSeedTable();
+        std::ofstream out("mansion_table", std::ios::out | std::ios::binary);
+        if (!out) {
+            std::cerr << "Failed to open file for writing" << std::endl;
+        } else {
+            out.write((const char*)seedTable.data(), seedTable.size() * sizeof(int16_t));
+            out.close();
+        }
+    }
     assert(table.size() == INDEX_SIZE);
-    auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t1);
-    std::cout << "Created seed table in " << millis.count() << "ms" << std::endl;
     std::cout << "Uploading to gpu" << std::endl;
-    cudaMemcpy(deviceMansionTable, table.data(), INDEX_SIZE * sizeof(int16_t), cudaMemcpyHostToDevice);
+    cudaMemcpy(deviceMansionTable, seedTable.data(), INDEX_SIZE * sizeof(int16_t), cudaMemcpyHostToDevice);
 
     int numMPs{};
     cudaDeviceGetAttribute(&numMPs, cudaDevAttrMultiProcessorCount, 0);
