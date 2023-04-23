@@ -31,7 +31,7 @@ std::vector<int64_t> readSeeds(char* path) {
 
 constexpr int64_t WORLD_SEED = -4172144997902289642LL;
 constexpr int64_t WOODLAND_BOUNDS = 23440;
-constexpr int64_t TOTAL_MANSIONS = (WOODLAND_BOUNDS * 2 + 1) * (WOODLAND_BOUNDS * 2 + 1);
+//constexpr int64_t TOTAL_MANSIONS = (WOODLAND_BOUNDS * 2 + 1) * (WOODLAND_BOUNDS * 2 + 1);
 constexpr int64_t chunkZMultInv248 = 211541297333629LL; // https://www.wolframalpha.com/input?i=132897987541%5E-1+mod+2%5E48
 constexpr auto RAND_MASK = (1LL << 48) - 1;
 constexpr auto LOWER_32_MASK = (1LL << 32) - 1;
@@ -45,7 +45,7 @@ int64_t nextSeed(int64_t seed) {
     return (seed * 0x5DEECE66DLL + 0xBLL) & RAND_MASK;
 }
 
-int64_t prevSeed(int64_t seed) {
+int64_t prevSeedHost(int64_t seed) {
     return (seed - 0xBLL) * 0xdfe05bcb1365LL & RAND_MASK;
 }
 
@@ -105,15 +105,17 @@ LcgParams computeLcgJump(const int64_t stepsIn) {
 }
 
 struct Result {
-    bool done;
+    int x;
+    int z;
     int64_t steps;
 };
 
-__device__ Result reverseResult;
-__device__ int mutex;
-
 __device__ int64_t nextSeed(int64_t seed, LcgParams lcg) {
     return (seed * lcg.mult + lcg.add) & RAND_MASK;
+}
+
+__device__ int64_t prevSeed(int64_t seed) {
+    return (seed - 0xBLL) * 0xdfe05bcb1365LL & RAND_MASK;
 }
 
 __device__ int64_t reverseWoodlandZGivenX(int64_t seed48Bits, int chunkX) {
@@ -125,23 +127,46 @@ __device__ bool isInRange(int64_t x, int64_t z) {
     return x >= -WOODLAND_BOUNDS & x <= WOODLAND_BOUNDS & z >= -WOODLAND_BOUNDS & z <= WOODLAND_BOUNDS;
 }
 
-__global__ void tryComputeSteps(const int16_t* mansionTable, const LcgParams lcg, int64_t* seeds, int kernelsRan) {
-    auto tid = blockIdx.x * blockDim.x + threadIdx.x;
-    auto seed = seeds[tid];
-    seeds[tid] = nextSeed(seed, lcg); // update the input seeds for the next iteration
+__device__ void getRange(int tid, int numThreads, int dataSize, int& offset, int& size) {
+    const int totalSize = dataSize;
+    const int numFullBlocks = totalSize / numThreads;
+    const int numOverflow = totalSize % numThreads;
 
-    const auto x = mansionTable[seed & LOWER_32_MASK];
+    if (tid < numOverflow) {
+        offset = tid * (numFullBlocks + 1);
+        size = numFullBlocks + 1;
+    } else {
+        offset = tid * numFullBlocks + numOverflow;
+        size = numFullBlocks;
+    }
+}
+
+__device__ bool isWoodlandSeed(const int16_t* table, int64_t seed, int& xOut, int64_t& zOut) {
+    const auto x = table[seed & LOWER_32_MASK];
     const auto z = reverseWoodlandZGivenX(seed, x);
-    if (isInRange(x, z)) {
-        const auto steps = kernelsRan + tid;
-        //printf("found result yay! seed: %ld , x/y: (%d, %ld), steps: %ld\n", seed, x, z, steps);
-        //printf("lcg: mult=%lx, add=%lx, steps=%ld\n", lcg.mult, lcg.add, lcg.steps);
-        while (atomicCAS(&mutex, 0, 1) != 0);
-        auto currentResult = reverseResult;
-        if (!currentResult.done || steps < currentResult.steps) {
-            reverseResult = {true, steps};
+    xOut = x;
+    zOut = z;
+    return isInRange(x, z);
+}
+
+__global__ void computeSteps(const int16_t* mansionTable, const int64_t* seedsArr, Result* resultArr, int totalSeedCount, int threadCount) {
+    auto tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int offset;
+    int size;
+    getRange(tid, threadCount, totalSeedCount, offset, size);
+    //printf("tid = %d, offset=%d, size=%d\n", tid, offset, size);
+
+    for (int i = 0; i < size; i++) {
+        auto seed = seedsArr[offset + i];
+        int steps = 0;
+        int x;
+        int64_t z;
+        while (!isWoodlandSeed(mansionTable, seed, x, z)) {
+            seed = prevSeed(seed);
+            steps++;
         }
-        atomicExch(&mutex, 0);
+        //printf("Found mansion at %d,%ld, steps = %d\n", x, z, steps);
+        resultArr[offset + i] = {.x = x, .z = (int) z, .steps = steps};
     }
 }
 
@@ -159,7 +184,7 @@ void verifyResult(Result result, int64_t inputSeed) {
     std::cout << "steps = " << result.steps << std::endl;
     int64_t outSeed = inputSeed;
     for (int i = 0; i < result.steps; i++) {
-        outSeed = prevSeed(outSeed);
+        outSeed = prevSeedHost(outSeed);
     }
     std::cout << "output seed: " << outSeed << std::endl;
     auto isValid = woodlandValid(outSeed);
@@ -204,31 +229,17 @@ int main(int argc, char** argv) {
     int threadCount = numMPs * warpSizeUwu;
 
     auto startTime = std::chrono::steady_clock::now();
-    for (const auto inputSeed : seeds) {
-        //const auto testSeed = 250517125837036LL;
-        auto seed = inputSeed;
-        std::vector<int64_t> inputSeeds;
-        for (int i = 0; i < threadCount; i++) {
-            inputSeeds.push_back(seed);
-            seed = prevSeed(seed);
-        }
-        auto* deviceInputSeeds = uploadBuffer(inputSeeds.data(), inputSeeds.size());
 
-        Result result = {false, 2'000'000'000};
-        cudaMemcpyToSymbol(reverseResult, &result, sizeof(Result));
-        //auto t1 = std::chrono::steady_clock::now();
-        int i = 0;
-        do {
-            tryComputeSteps<<<numMPs, warpSizeUwu>>>((int16_t*) deviceMansionTable, computeLcgJump(-threadCount), deviceInputSeeds, i * threadCount);
-            cudaDeviceSynchronize();
+    const auto* deviceInputSeeds = uploadBuffer(seeds.data(), seeds.size());
+    void* deviceResults;
+    cudaMalloc(&deviceResults, seeds.size() * sizeof(Result));
 
-            cudaMemcpyFromSymbol(&result, reverseResult, sizeof(Result));
-            i++;
-        } while (!result.done);
-        //std::cout << result.steps << " steps yay!!!" << std::endl;
-        //auto micros = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t1);
-        //std::cout << "reversed seed in " << micros.count() << "us" << std::endl;
-    }
+    computeSteps<<<numMPs, warpSizeUwu>>>((int16_t*) deviceMansionTable, deviceInputSeeds, (Result*) deviceResults, seeds.size(), threadCount);
+    cudaDeviceSynchronize();
+
+    std::vector<Result> results(seeds.size());
+    cudaMemcpy(results.data(), deviceResults, seeds.size() * sizeof(Result), cudaMemcpyDeviceToHost);
+
     auto execTime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime).count();
     std::cout << "Reversed " << seeds.size() << " seeds in " << execTime << "ms" << std::endl;
 
