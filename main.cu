@@ -158,20 +158,23 @@ __global__ void computeSteps(const int16_t* mansionTable, const int64_t* seedsAr
         while (!isWoodlandSeed(mansionTable, seed, x, z)) {
             [[unlikely]] if (seed == prevResult.startSeed) {
                 resultArr[offset + i] = {
-                        .x = prevResult.x,
-                        .z = prevResult.z,
-                        .steps = steps + prevResult.steps,
-                        .startSeed = startSeed
+                    .x = prevResult.x,
+                    .z = prevResult.z,
+                    .steps = steps + prevResult.steps,
+                    .startSeed = startSeed
                 };
-                break;
+                goto end;
             }
             seed = prevSeed(seed);
             steps++;
         }
         //printf("Found mansion at %d,%ld, steps = %d\n", x, z, steps);
-        Result result{.x = x, .z = (int) z, .steps = steps, .startSeed = startSeed};
-        resultArr[offset + i] = result;
-        prevResult = result;
+        {
+            Result result{.x = x, .z = (int) z, .steps = steps, .startSeed = startSeed};
+            resultArr[offset + i] = result;
+            prevResult = result;
+        }
+        end:;
     }
 }
 
