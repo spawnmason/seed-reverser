@@ -6,6 +6,7 @@
 #include <cassert>
 #include <optional>
 #include <fstream>
+#include <filesystem>
 
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -18,6 +19,13 @@ void printCudaVersion() {
     printf("CUDA runtime version: %d\n", cudaVersion);
     auto err = cudaDriverGetVersion(&cudaVersion);
     printf("CUDA driver version: %d.%d\n", cudaVersion / 1000, (cudaVersion % 100) / 10);
+}
+
+void checkCudaError(cudaError_t err) {
+    if (err) {
+        std::cerr << "CUDA error " << cudaGetErrorString(err) << std::endl;
+        exit(1);
+    }
 }
 
 std::vector<int64_t> readSeeds(char* path) {
@@ -152,48 +160,30 @@ __device__ bool isWoodlandSeed(const int16_t* table, int64_t seed, int& xOut, in
     return z >= -WOODLAND_BOUNDS & z <= WOODLAND_BOUNDS;
 }
 
-__global__ void computeSteps(const int16_t* mansionTable, const int64_t* seedsArr, Result* resultArr, int totalSeedCount, int threadCount) {
+__global__ void computeSteps(const int16_t* mansionTable, const int64_t* seedsArr, Result* resultArr) {
     auto tid = blockIdx.x * blockDim.x + threadIdx.x;
-    int offset;
-    int size;
-    getRange(tid, threadCount, totalSeedCount, offset, size);
     //printf("tid = %d, offset=%d, size=%d\n", tid, offset, size);
-    Result prevResult{};
 
-    for (int i = 0; i < size; i++) {
-        const auto startSeed = seedsArr[offset + i];
-        auto seed = startSeed;
-        int steps = 0;
-        int x;
-        int64_t z;
-        while (!isWoodlandSeed(mansionTable, seed, x, z)) {
-            [[unlikely]] if (seed == prevResult.startSeed) {
-                resultArr[offset + i] = {
-                    .x = prevResult.x,
-                    .z = prevResult.z,
-                    .steps = steps + prevResult.steps,
-                    .startSeed = startSeed
-                };
-                goto end;
-            }
-            seed = prevSeed(seed);
-            steps++;
-        }
-        //printf("Found mansion at %d,%ld, steps = %d\n", x, z, steps);
-        {
-            Result result{.x = x, .z = (int) z, .steps = steps, .startSeed = startSeed};
-            resultArr[offset + i] = result;
-            prevResult = result;
-        }
-        end:;
+    const auto startSeed = seedsArr[tid];
+    auto seed = startSeed;
+    int steps = 0;
+    int x;
+    int64_t z;
+    while (!isWoodlandSeed(mansionTable, seed ^ 0x5DEECE66DLL, x, z)) {
+        seed = prevSeed(seed);
+        steps++;
     }
+    //printf("Found mansion at %d,%ld, steps = %d\n", x, z, steps);
+
+    Result result{.x = x, .z = (int) z, .steps = steps, .startSeed = startSeed};
+    resultArr[tid] = result;
 }
 
 template<typename T>
 T* uploadBuffer(T* data, size_t len) {
     void* deviceBuffer;
-    cudaMalloc(&deviceBuffer, len * sizeof(T));
-    cudaMemcpy(deviceBuffer, data, len * sizeof(T), cudaMemcpyHostToDevice);
+    checkCudaError(cudaMalloc(&deviceBuffer, len * sizeof(T)));
+    checkCudaError(cudaMemcpy(deviceBuffer, data, len * sizeof(T), cudaMemcpyHostToDevice));
     return (T*) deviceBuffer;
 }
 
@@ -242,11 +232,15 @@ std::optional<void*> mmapTable() {
 
 int main(int argc, char** argv) {
     printCudaVersion();
-    if (argc < 2) {
-        std::cout << "Expected file argument" << std::endl;
-        return 1;
+    if (argc < 3) {
+        std::cout << "Expected 2 file arguments" << std::endl;
+        //return 1;
     }
     auto seeds = readSeeds(argv[1]);
+    /*if (!std::filesystem::exists(argv[2])) {
+        std::cerr << "output file doesnt exist" << std::endl;
+        return 1;
+    }*/
 
     void* deviceMansionTable;
     auto err = cudaMalloc(&deviceMansionTable, INDEX_SIZE * sizeof(int16_t));
@@ -254,7 +248,6 @@ int main(int argc, char** argv) {
         std::cout << "Failed to allocate table on gpu (" << cudaGetErrorString(err) << ")" << std::endl;
         return 1;
     }
-
 
     std::vector<int16_t> seedTable;
     if (auto file = mmapTable(); file) {
@@ -276,7 +269,7 @@ int main(int argc, char** argv) {
     }
     assert(table.size() == INDEX_SIZE);
     std::cout << "Uploading to gpu" << std::endl;
-    cudaMemcpy(deviceMansionTable, seedTable.data(), INDEX_SIZE * sizeof(int16_t), cudaMemcpyHostToDevice);
+    checkCudaError(cudaMemcpy(deviceMansionTable, seedTable.data(), INDEX_SIZE * sizeof(int16_t), cudaMemcpyHostToDevice));
 
     int numMPs{};
     cudaDeviceGetAttribute(&numMPs, cudaDevAttrMultiProcessorCount, 0);
@@ -290,13 +283,16 @@ int main(int argc, char** argv) {
 
     const auto* deviceInputSeeds = uploadBuffer(seeds.data(), seeds.size());
     void* deviceResults;
-    cudaMalloc(&deviceResults, seeds.size() * sizeof(Result));
+    checkCudaError(cudaMalloc(&deviceResults, seeds.size() * sizeof(Result)));
 
-    computeSteps<<<numMPs, warpSizeUwu>>>((int16_t*) deviceMansionTable, deviceInputSeeds, (Result*) deviceResults, seeds.size(), threadCount);
+    const auto threadsPerBlock = 256;
+    const auto numBlocks = (seeds.size() + threadsPerBlock - 1) / threadsPerBlock;
+    std::cout << "numBlocks * threadsPerBlock = " << threadsPerBlock * numBlocks << std::endl;
+    computeSteps<<<numBlocks, threadsPerBlock>>>((int16_t*) deviceMansionTable, deviceInputSeeds, (Result*) deviceResults);
     cudaDeviceSynchronize();
 
     std::vector<Result> results(seeds.size());
-    cudaMemcpy(results.data(), deviceResults, seeds.size() * sizeof(Result), cudaMemcpyDeviceToHost);
+    checkCudaError(cudaMemcpy(results.data(), deviceResults, seeds.size() * sizeof(Result), cudaMemcpyDeviceToHost));
 
     auto execTime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime).count();
     std::cout << "Reversed " << seeds.size() << " seeds in " << execTime << "ms" << std::endl;
