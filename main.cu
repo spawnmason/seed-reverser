@@ -108,6 +108,7 @@ struct Result {
     int x;
     int z;
     int64_t steps;
+    int64_t startSeed;
 };
 
 __device__ int64_t prevSeed(int64_t seed) {
@@ -146,18 +147,31 @@ __global__ void computeSteps(const int16_t* mansionTable, const int64_t* seedsAr
     int size;
     getRange(tid, threadCount, totalSeedCount, offset, size);
     //printf("tid = %d, offset=%d, size=%d\n", tid, offset, size);
+    Result prevResult{};
 
     for (int i = 0; i < size; i++) {
-        auto seed = seedsArr[offset + i];
+        const auto startSeed = seedsArr[offset + i];
+        auto seed = startSeed;
         int steps = 0;
         int x;
         int64_t z;
         while (!isWoodlandSeed(mansionTable, seed, x, z)) {
+            [[unlikely]] if (seed == prevResult.startSeed) {
+                resultArr[offset + i] = {
+                        .x = prevResult.x,
+                        .z = prevResult.z,
+                        .steps = steps + prevResult.steps,
+                        .startSeed = startSeed
+                };
+                break;
+            }
             seed = prevSeed(seed);
             steps++;
         }
         //printf("Found mansion at %d,%ld, steps = %d\n", x, z, steps);
-        resultArr[offset + i] = {.x = x, .z = (int) z, .steps = steps};
+        Result result{.x = x, .z = (int) z, .steps = steps, .startSeed = startSeed};
+        resultArr[offset + i] = result;
+        prevResult = result;
     }
 }
 
