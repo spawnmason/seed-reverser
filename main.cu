@@ -45,7 +45,6 @@ std::vector<int64_t> readSeeds(char* path) {
 
 constexpr int64_t WORLD_SEED = -4172144997902289642LL;
 constexpr int64_t WOODLAND_BOUNDS = 23440;
-//constexpr int64_t TOTAL_MANSIONS = (WOODLAND_BOUNDS * 2 + 1) * (WOODLAND_BOUNDS * 2 + 1);
 constexpr int64_t chunkZMultInv248 = 211541297333629LL; // https://www.wolframalpha.com/input?i=132897987541%5E-1+mod+2%5E48
 constexpr auto RAND_MASK = (1LL << 48) - 1;
 constexpr auto LOWER_32_MASK = (1LL << 32) - 1;
@@ -53,10 +52,6 @@ constexpr auto INDEX_SIZE = (1LL << 32);
 
 int64_t woodlandMansionSeed(int chunkX, int chunkZ) { // from World and WoodlandMansion
     return ((int64_t) chunkX * 341873128712LL + (int64_t) chunkZ * 132897987541LL + WORLD_SEED + (int64_t) 10387319) & RAND_MASK; // rand drops highest 16 bits anyway
-}
-
-int64_t nextSeed(int64_t seed) {
-    return (seed * 0x5DEECE66DLL + 0xBLL) & RAND_MASK;
 }
 
 int64_t prevSeedHost(int64_t seed) {
@@ -96,33 +91,6 @@ std::vector<int16_t> createSeedTable() {
     return out;
 }
 
-struct LcgParams {
-    int64_t mult, add;
-    int64_t steps;
-};
-
-LcgParams computeLcgJump(const int64_t stepsIn) {
-    int64_t steps = stepsIn & RAND_MASK;
-    LcgParams result{1, 0, steps};
-    LcgParams current{0x5DEECE66DL, 0xB};
-
-    while (steps > 0) {
-        if (steps % 2 == 1) {
-            result.mult = (result.mult * current.mult);
-            result.add = (current.add + result.add * current.mult);
-        }
-        steps /= 2;
-
-        int64_t mult = current.mult;
-        int64_t add = current.add;
-        current = {(mult * mult), (add * mult + add)};
-    }
-
-    result.mult &= RAND_MASK;
-    result.add &= RAND_MASK;
-    return {result.mult, result.add, stepsIn};
-}
-
 struct Result {
     int x;
     int z;
@@ -136,20 +104,6 @@ __device__ int64_t prevSeed(int64_t seed) {
 
 __device__ int64_t reverseWoodlandZGivenX(int64_t seed48Bits, int chunkX) {
     return (((seed48Bits - WORLD_SEED - 10387319 - (int64_t) chunkX * 341873128712LL)) * chunkZMultInv248) << 16 >> 16;
-}
-
-__device__ void getRange(int tid, int numThreads, int dataSize, int& offset, int& size) {
-    const int totalSize = dataSize;
-    const int numFullBlocks = totalSize / numThreads;
-    const int numOverflow = totalSize % numThreads;
-
-    if (tid < numOverflow) {
-        offset = tid * (numFullBlocks + 1);
-        size = numFullBlocks + 1;
-    } else {
-        offset = tid * numFullBlocks + numOverflow;
-        size = numFullBlocks;
-    }
 }
 
 __device__ bool isWoodlandSeed(const int16_t* table, int64_t seed, int& xOut, int64_t& zOut) {
@@ -214,7 +168,7 @@ std::optional<void*> mmapTable() {
         return {};
     }
 
-    struct stat sb;
+    struct stat sb{};
     if (fstat(fd, &sb) == -1) {
         std::cerr << "Failed to get file size\n";
         return {};
