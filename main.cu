@@ -110,21 +110,12 @@ struct Result {
     int64_t steps;
 };
 
-__device__ int64_t nextSeed(int64_t seed, LcgParams lcg) {
-    return (seed * lcg.mult + lcg.add) & RAND_MASK;
-}
-
 __device__ int64_t prevSeed(int64_t seed) {
     return (seed - 0xBLL) * 0xdfe05bcb1365LL & RAND_MASK;
 }
 
 __device__ int64_t reverseWoodlandZGivenX(int64_t seed48Bits, int chunkX) {
-    constexpr auto mask = (1LL << 48) - 1;
-    return (((seed48Bits - WORLD_SEED - 10387319 - (int64_t) chunkX * 341873128712LL) & mask) * chunkZMultInv248) << 16 >> 16;
-}
-
-__device__ bool isInRange(int64_t x, int64_t z) {
-    return x >= -WOODLAND_BOUNDS & x <= WOODLAND_BOUNDS & z >= -WOODLAND_BOUNDS & z <= WOODLAND_BOUNDS;
+    return (((seed48Bits - WORLD_SEED - 10387319 - (int64_t) chunkX * 341873128712LL)) * chunkZMultInv248) << 16 >> 16;
 }
 
 __device__ void getRange(int tid, int numThreads, int dataSize, int& offset, int& size) {
@@ -146,7 +137,7 @@ __device__ bool isWoodlandSeed(const int16_t* table, int64_t seed, int& xOut, in
     const auto z = reverseWoodlandZGivenX(seed, x);
     xOut = x;
     zOut = z;
-    return isInRange(x, z);
+    return z >= -WOODLAND_BOUNDS & z <= WOODLAND_BOUNDS;
 }
 
 __global__ void computeSteps(const int16_t* mansionTable, const int64_t* seedsArr, Result* resultArr, int totalSeedCount, int threadCount) {
