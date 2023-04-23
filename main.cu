@@ -160,8 +160,11 @@ __device__ bool isWoodlandSeed(const int16_t* table, int64_t seed, int& xOut, in
     return z >= -WOODLAND_BOUNDS & z <= WOODLAND_BOUNDS;
 }
 
-__global__ void computeSteps(const int16_t* mansionTable, const int64_t* seedsArr, Result* resultArr) {
+__global__ void computeSteps(const int16_t* mansionTable, const int64_t* seedsArr, Result* resultArr, size_t numData) {
     auto tid = blockIdx.x * blockDim.x + threadIdx.x;
+    [[unlikely]] if (tid >= numData) {
+        return;
+    }
     //printf("tid = %d, offset=%d, size=%d\n", tid, offset, size);
 
     const auto startSeed = seedsArr[tid];
@@ -271,14 +274,6 @@ int main(int argc, char** argv) {
     std::cout << "Uploading to gpu" << std::endl;
     checkCudaError(cudaMemcpy(deviceMansionTable, seedTable.data(), INDEX_SIZE * sizeof(int16_t), cudaMemcpyHostToDevice));
 
-    int numMPs{};
-    cudaDeviceGetAttribute(&numMPs, cudaDevAttrMultiProcessorCount, 0);
-    printf("numMPs = %d\n", numMPs);
-    int warpSizeUwu{};
-    cudaDeviceGetAttribute(&warpSizeUwu, cudaDevAttrWarpSize, 0);
-    printf("Warp size: %d\n", warpSizeUwu);
-    int threadCount = numMPs * warpSizeUwu;
-
     auto startTime = std::chrono::steady_clock::now();
 
     const auto* deviceInputSeeds = uploadBuffer(seeds.data(), seeds.size());
@@ -288,7 +283,7 @@ int main(int argc, char** argv) {
     const auto threadsPerBlock = 256;
     const auto numBlocks = (seeds.size() + threadsPerBlock - 1) / threadsPerBlock;
     std::cout << "numBlocks * threadsPerBlock = " << threadsPerBlock * numBlocks << std::endl;
-    computeSteps<<<numBlocks, threadsPerBlock>>>((int16_t*) deviceMansionTable, deviceInputSeeds, (Result*) deviceResults);
+    computeSteps<<<numBlocks, threadsPerBlock>>>((int16_t*) deviceMansionTable, deviceInputSeeds, (Result*) deviceResults, seeds.size());
     cudaDeviceSynchronize();
 
     std::vector<Result> results(seeds.size());
