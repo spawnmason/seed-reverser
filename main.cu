@@ -256,8 +256,8 @@ int main(int argc, char** argv) {
     int16_t* deviceMansionTable = createSeedTableGpu();
     if (argc <= 1) {
         while (true) {
-            std::this_thread::sleep_for(std::chrono::seconds{120});
             reverseNitwitSeeds(deviceMansionTable);
+            std::this_thread::sleep_for(std::chrono::seconds{120});
         }
     } else {
         if (argc != 3) {
