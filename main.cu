@@ -313,7 +313,7 @@ int main(int argc, char** argv) {
     void* deviceMansionTable = loadSeedTable();
     if (argc <= 1) {
         while (true) {
-            std::this_thread::sleep_for(std::chrono::seconds{5});
+            std::this_thread::sleep_for(std::chrono::seconds{120});
             reverseNitwitSeeds(deviceMansionTable);
         }
     } else {
