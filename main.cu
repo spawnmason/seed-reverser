@@ -4,8 +4,6 @@
 #include <charconv>
 #include <chrono>
 #include <cassert>
-#include <optional>
-#include <filesystem>
 #include <thread>
 
 #include <sys/mman.h>
@@ -19,7 +17,7 @@
 void printCudaVersion() {
     int cudaVersion;
     cudaRuntimeGetVersion(&cudaVersion);
-    printf("CUDA runtime version: %d\n", cudaVersion);
+    printf("CUDA runtime version: %d.%d\n", cudaVersion / 1000, (cudaVersion % 100) / 10);
     auto err = cudaDriverGetVersion(&cudaVersion);
     printf("CUDA driver version: %d.%d\n", cudaVersion / 1000, (cudaVersion % 100) / 10);
 }
@@ -64,16 +62,6 @@ int64_t prevSeedHost(int64_t seed) {
 int64_t reverseWoodlandZGivenXHost(int64_t seed48Bits, int chunkX) {
     constexpr auto mask = (1LL << 48) - 1;
     return (((seed48Bits - WORLD_SEED - 10387319 - (int64_t) chunkX * 341873128712LL) & mask) * chunkZMultInv248) << 16 >> 16;
-}
-
-std::optional<std::pair<int, int>> woodlandValid(int64_t candidate) {
-    for (int x = -WOODLAND_BOUNDS; x <= WOODLAND_BOUNDS; x++) {
-        long z = reverseWoodlandZGivenXHost(candidate, x);
-        if (z >= -WOODLAND_BOUNDS && z <= WOODLAND_BOUNDS) {
-            return {{x, z}};
-        }
-    }
-    return {};
 }
 
 std::vector<int16_t> createSeedTable() {
@@ -145,7 +133,7 @@ T* uploadBuffer(T* data, size_t len) {
     return (T*) deviceBuffer;
 }
 
-std::optional<void*> mmapTable() {
+void* mmapTable() {
     int fd = open("mansion_table", O_RDONLY);
     if (fd == -1) {
         return {};
@@ -165,9 +153,13 @@ std::optional<void*> mmapTable() {
     void* addr = mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
     if (addr == MAP_FAILED) {
         std::cerr << "Failed to mmap file\n";
-        return {};
+        return nullptr;
     }
-    return {addr};
+    return addr;
+}
+
+bool fileExists(char* path) {
+    return access(path, F_OK) == 0;
 }
 
 bool readBytes(int socket, void* bufferIn, size_t size) {
@@ -290,12 +282,14 @@ void* loadSeedTable() {
     }
 
     std::vector<int16_t> seedTable;
-    if (auto file = mmapTable(); file) {
+    auto file = mmapTable();
+    if (file) {
         std::cerr << "Loading seed table from disk" << std::endl;
         auto t1 = std::chrono::steady_clock::now();
         seedTable.assign(INDEX_SIZE, 0);
-        memcpy(seedTable.data(), *file, INDEX_SIZE * sizeof(int16_t));
+        memcpy(seedTable.data(), file, INDEX_SIZE * sizeof(int16_t));
         auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t1);
+        munmap(file, INDEX_SIZE * sizeof(int16_t));
         std::cerr << "Loaded seed table in " << millis.count() << "ms" << std::endl;
     } else {
         seedTable = createSeedTable();
@@ -328,7 +322,7 @@ int main(int argc, char** argv) {
             return 1;
         }
         auto seeds = readSeeds(argv[1]);
-        if (!std::filesystem::exists(argv[2])) {
+        if (!fileExists(argv[2])) {
             std::cerr << "Output file doesnt exist" << std::endl;
             return 1;
         }
