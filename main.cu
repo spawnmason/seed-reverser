@@ -6,6 +6,7 @@
 #include <cassert>
 #include <optional>
 #include <filesystem>
+#include <thread>
 
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -37,7 +38,7 @@ std::vector<int64_t> readSeeds(char* path) {
     while (std::getline(file, line)) {
         int64_t num;
         if (std::from_chars(line.c_str(), line.c_str() + line.size(), num).ec != std::errc{}) {
-            std::cout << "Failed to parse \"" << line << "\" as a uint64" << std::endl;
+            std::cerr << "Failed to parse \"" << line << "\" as a uint64" << std::endl;
             exit(1);
         }
         seeds.push_back(num);
@@ -76,7 +77,7 @@ std::optional<std::pair<int, int>> woodlandValid(int64_t candidate) {
 }
 
 std::vector<int16_t> createSeedTable() {
-    std::cout << "Creating seed table" << std::endl;
+    std::cerr << "Creating seed table" << std::endl;
     auto t1 = std::chrono::steady_clock::now();
     // Initialize with max 16 bit int, which is out of the range of valid mansion coords
     std::vector<int16_t> out(INDEX_SIZE, 0);
@@ -88,7 +89,7 @@ std::vector<int16_t> createSeedTable() {
         }
     }
     auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t1);
-    std::cout << "Created seed table in " << millis.count() << "ms" << std::endl;
+    std::cerr << "Created seed table in " << millis.count() << "ms" << std::endl;
 
     return out;
 }
@@ -226,7 +227,6 @@ std::vector<Result> reverseSeeds(void* deviceMansionTable, const std::vector<int
 
     const auto threadsPerBlock = 256;
     const auto numBlocks = (seeds.size() + threadsPerBlock - 1) / threadsPerBlock;
-    std::cout << "numBlocks * threadsPerBlock = " << threadsPerBlock * numBlocks << std::endl;
     computeSteps<<<numBlocks, threadsPerBlock>>>((int16_t*) deviceMansionTable, deviceInputSeeds, (Result*) deviceResults, seeds.size());
     cudaDeviceSynchronize();
 
@@ -234,7 +234,7 @@ std::vector<Result> reverseSeeds(void* deviceMansionTable, const std::vector<int
     checkCudaError(cudaMemcpy(results.data(), deviceResults, seeds.size() * sizeof(Result), cudaMemcpyDeviceToHost));
     cudaFree(deviceResults);
     auto execTime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime).count();
-    std::cout << "Reversed " << seeds.size() << " seeds in " << execTime << "ms" << std::endl;
+    std::cerr << "Reversed " << seeds.size() << " seeds in " << execTime << "ms" << std::endl;
 
     return results;
 }
@@ -258,7 +258,7 @@ void reverseNitwitSeeds(void* deviceMansionTable) {
         return;
     }
     seedCount = ntohl(seedCount);
-    std::cout << "nitwit gave us " << seedCount << " seeds" << std::endl;
+    std::cerr << "nitwit gave us " << seedCount << " seeds" << std::endl;
     std::vector<int64_t> seeds(seedCount);
     auto seedBytes = seeds.size() * sizeof(int64_t);
     if (!readBytes(sockfd, seeds.data(), seedBytes)) {
@@ -269,12 +269,6 @@ void reverseNitwitSeeds(void* deviceMansionTable) {
         x = convertEndian64(x);
     }
     auto results = reverseSeeds(deviceMansionTable, seeds);
-    for (int i = 0; i < results.size(); i++) {
-        if (results[i].startSeed == -1) {
-            std::cout << "troll seed at index " << i << std::endl;
-            std::cout << "input seed is " << seeds[i] << std::endl;
-        }
-    }
     if (!writeI32be(sockfd, results.size())) throw std::runtime_error("wtf");
     for (const auto& r : results) {
         if (!writeI64be(sockfd, r.startSeed)) throw std::runtime_error("wtf");
@@ -284,38 +278,25 @@ void reverseNitwitSeeds(void* deviceMansionTable) {
     }
     close(sockfd);
 
-    std::cout << "sent " << results.size() << " results to nitwit" << std::endl;
+    std::cerr << "sent " << results.size() << " results to nitwit" << std::endl;
 }
 
-int main(int argc, char** argv) {
-    //std::cout << woodlandMansionSeed(-597, 565);
-    //exit(0);
-    printCudaVersion();
-    if (argc < 3) {
-        std::cout << "Expected 2 file arguments" << std::endl;
-        //return 1;
-    }
-    auto seeds = readSeeds(argv[1]);
-    if (!std::filesystem::exists(argv[2])) {
-        std::cerr << "output file doesnt exist" << std::endl;
-        return 1;
-    }
-
+void* loadSeedTable() {
     void* deviceMansionTable;
     auto err = cudaMalloc(&deviceMansionTable, INDEX_SIZE * sizeof(int16_t));
     if (err != cudaSuccess) {
-        std::cout << "Failed to allocate table on gpu (" << cudaGetErrorString(err) << ")" << std::endl;
-        return 1;
+        std::cerr << "Failed to allocate table on gpu (" << cudaGetErrorString(err) << ")" << std::endl;
+        exit(1);
     }
 
     std::vector<int16_t> seedTable;
     if (auto file = mmapTable(); file) {
-        std::cout << "Loading seed table from disk" << std::endl;
+        std::cerr << "Loading seed table from disk" << std::endl;
         auto t1 = std::chrono::steady_clock::now();
         seedTable.assign(INDEX_SIZE, 0);
         memcpy(seedTable.data(), *file, INDEX_SIZE * sizeof(int16_t));
         auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t1);
-        std::cout << "Loaded seed table in " << millis.count() << "ms" << std::endl;
+        std::cerr << "Loaded seed table in " << millis.count() << "ms" << std::endl;
     } else {
         seedTable = createSeedTable();
         std::ofstream out("mansion_table", std::ios::out | std::ios::binary);
@@ -327,17 +308,34 @@ int main(int argc, char** argv) {
         }
     }
     assert(seedTable.size() == INDEX_SIZE);
-    std::cout << "Uploading to gpu" << std::endl;
+    std::cerr << "Uploading to gpu" << std::endl;
     checkCudaError(cudaMemcpy(deviceMansionTable, seedTable.data(), INDEX_SIZE * sizeof(int16_t), cudaMemcpyHostToDevice));
 
-    //auto results = reverseSeeds(deviceMansionTable, seeds);
-    reverseNitwitSeeds(deviceMansionTable);
+    return deviceMansionTable;
+}
 
-
-    /*std::ofstream out(argv[2]);
-    for (const auto& r : results) {
-        out << r.startSeed << ", " << r.steps << ", " << r.x << ", " << r.z << std::endl;
-    }*/
-
-    return 0;
+int main(int argc, char** argv) {
+    printCudaVersion();
+    void* deviceMansionTable = loadSeedTable();
+    if (argc <= 1) {
+        while (true) {
+            std::this_thread::sleep_for(std::chrono::seconds{5});
+            reverseNitwitSeeds(deviceMansionTable);
+        }
+    } else {
+        if (argc != 3) {
+            std::cerr << "Expected 2 file arguments" << std::endl;
+            return 1;
+        }
+        auto seeds = readSeeds(argv[1]);
+        if (!std::filesystem::exists(argv[2])) {
+            std::cerr << "Output file doesnt exist" << std::endl;
+            return 1;
+        }
+        auto results = reverseSeeds(deviceMansionTable, seeds);
+        std::ofstream out(argv[2]);
+        for (const auto& r : results) {
+            out << r.startSeed << ", " << r.steps << ", " << r.x << ", " << r.z << std::endl;
+        }
+    }
 }
