@@ -4,11 +4,11 @@ FROM nvidia/cuda:11.4.0-devel-ubuntu20.04
 # Set the working directory to /app
 WORKDIR /app
 
-# Copy the current directory contents into the container at /app
-COPY . /app
-
 # Install any necessary dependencies
 RUN apt-get update && apt-get install -y build-essential
+
+# Copy the current directory contents into the container at /app
+COPY . /app
 
 # Build the CUDA executable
 RUN nvcc -O3 -o seed-reverser main.cu
