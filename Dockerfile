@@ -1,5 +1,5 @@
 # Use an official CUDA runtime as a parent image
-FROM nvidia/cuda:12.1.0-devel-ubuntu20.04
+FROM nvidia/cuda:11.4.0-devel-ubuntu20.04
 
 # Set the working directory to /app
 WORKDIR /app
