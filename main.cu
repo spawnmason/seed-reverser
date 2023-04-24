@@ -80,7 +80,7 @@ int16_t* createSeedTableGpu() {
     writeToSeedTable<<<numBlocks, threadsPerBlock>>>(deviceTablePtr);
     cudaDeviceSynchronize();
     auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t1);
-    std::cout << "generated table in " << millis.count() << "ms" << std::endl;
+    std::cerr << "generated table in " << millis.count() << "ms" << std::endl;
     return deviceTablePtr;
 }
 
@@ -238,7 +238,6 @@ void reverseNitwitSeeds(void* deviceMansionTable) {
     for (auto& x : seeds) {
         x = convertEndian64(x);
     }
-    std::cout << seeds.front() << std::endl;
     auto results = reverseSeeds(deviceMansionTable, seeds);
     if (!writeI32be(sockfd, results.size())) throw std::runtime_error("wtf");
     for (const auto& r : results) {
