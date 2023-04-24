@@ -5,11 +5,10 @@
 #include <chrono>
 #include <thread>
 
-#include <sys/stat.h>
 #include <sys/socket.h>
-#include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <endian.h>
 
 void printCudaVersion() {
     int cudaVersion;
@@ -166,23 +165,15 @@ bool writeBytes(int socket, const void* bufferIn, size_t size) {
 }
 
 bool writeI16be(int fd, int16_t x) {
-    auto be = htons(x);
+    auto be = htobe16(x);
     return writeBytes(fd, &be, 2);
 }
 bool writeI32be(int fd, int32_t x) {
-    auto be = htonl(x);
+    auto be = htobe32(x);
     return writeBytes(fd, &be, 4);
 }
-
-int64_t convertEndian64(int64_t x) {
-#if __BYTE_ORDER == __LITTLE_ENDIAN
-    return (int64_t) __bswap_64(x);
-#else
-    return x;
-#endif
-}
 bool writeI64be(int fd, int64_t x) {
-    auto be = convertEndian64(x);
+    auto be = htobe64(x);
     return writeBytes(fd, &be, 8);
 }
 
@@ -234,7 +225,7 @@ void reverseNitwitSeeds(const int16_t* deviceMansionTable) {
         return;
     }
     for (auto& x : seeds) {
-        x = convertEndian64(x);
+        x = be64toh(x);
     }
     auto results = reverseSeeds(deviceMansionTable, seeds);
     if (!writeI32be(sockfd, results.size())) throw std::runtime_error("wtf");
