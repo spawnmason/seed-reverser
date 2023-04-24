@@ -46,40 +46,42 @@ std::vector<int64_t> readSeeds(char* path) {
 
 constexpr int64_t WORLD_SEED = -4172144997902289642LL;
 constexpr int64_t WOODLAND_BOUNDS = 23440;
+constexpr int64_t MANSIONS_IN_ROW = (WOODLAND_BOUNDS * 2 + 1);
+constexpr int64_t TOTAL_MANSIONS = MANSIONS_IN_ROW * MANSIONS_IN_ROW;
 constexpr int64_t chunkZMultInv248 = 211541297333629LL; // https://www.wolframalpha.com/input?i=132897987541%5E-1+mod+2%5E48
 constexpr auto RAND_MASK = (1LL << 48) - 1;
 constexpr auto LOWER_32_MASK = (1LL << 32) - 1;
 constexpr auto INDEX_SIZE = (1LL << 32);
 
-int64_t woodlandMansionSeed(int chunkX, int chunkZ) { // from World and WoodlandMansion
+__host__ __device__ int64_t woodlandMansionSeed(int chunkX, int chunkZ) { // from World and WoodlandMansion
     return ((int64_t) chunkX * 341873128712LL + (int64_t) chunkZ * 132897987541LL + WORLD_SEED + (int64_t) 10387319) & RAND_MASK; // rand drops highest 16 bits anyway
 }
 
-int64_t prevSeedHost(int64_t seed) {
-    return (seed - 0xBLL) * 0xdfe05bcb1365LL & RAND_MASK;
+__global__ void writeToSeedTable(int16_t* table) {
+    auto tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= TOTAL_MANSIONS) return;
+    auto x = tid / MANSIONS_IN_ROW - WOODLAND_BOUNDS;
+    auto z = tid % MANSIONS_IN_ROW - WOODLAND_BOUNDS;
+    auto seed = woodlandMansionSeed(x, z);
+    table[seed & LOWER_32_MASK] = (int16_t) x;
 }
 
-int64_t reverseWoodlandZGivenXHost(int64_t seed48Bits, int chunkX) {
-    constexpr auto mask = (1LL << 48) - 1;
-    return (((seed48Bits - WORLD_SEED - 10387319 - (int64_t) chunkX * 341873128712LL) & mask) * chunkZMultInv248) << 16 >> 16;
-}
-
-std::vector<int16_t> createSeedTable() {
-    std::cerr << "Creating seed table" << std::endl;
+int16_t* createSeedTableGpu() {
     auto t1 = std::chrono::steady_clock::now();
-    // Initialize with max 16 bit int, which is out of the range of valid mansion coords
-    std::vector<int16_t> out(INDEX_SIZE, 0);
-
-    for (int x = -WOODLAND_BOUNDS; x <= WOODLAND_BOUNDS; x++) {
-        for (int z = -WOODLAND_BOUNDS; z <= WOODLAND_BOUNDS; z++) {
-            auto seed = woodlandMansionSeed(x, z);
-            out[seed & LOWER_32_MASK] = (int16_t) x;
-        }
+    int16_t *deviceTablePtr;
+    auto err = cudaMalloc(&deviceTablePtr, INDEX_SIZE * sizeof(int16_t));
+    if (err != cudaSuccess) {
+        std::cerr << "Failed to allocate table on gpu (" << cudaGetErrorString(err) << ")" << std::endl;
+        exit(1);
     }
+    cudaMemset(deviceTablePtr, 0, INDEX_SIZE * sizeof(int16_t));
+    const auto threadsPerBlock = 256;
+    const auto numBlocks = (TOTAL_MANSIONS + threadsPerBlock - 1) / threadsPerBlock;
+    writeToSeedTable<<<numBlocks, threadsPerBlock>>>(deviceTablePtr);
+    cudaDeviceSynchronize();
     auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t1);
-    std::cerr << "Created seed table in " << millis.count() << "ms" << std::endl;
-
-    return out;
+    std::cout << "generated table in " << millis.count() << "ms" << std::endl;
+    return deviceTablePtr;
 }
 
 struct Result {
@@ -133,30 +135,6 @@ T* uploadBuffer(T* data, size_t len) {
     return (T*) deviceBuffer;
 }
 
-void* mmapTable() {
-    int fd = open("mansion_table", O_RDONLY);
-    if (fd == -1) {
-        return {};
-    }
-
-    struct stat sb{};
-    if (fstat(fd, &sb) == -1) {
-        std::cerr << "Failed to get file size\n";
-        return {};
-    }
-    const auto size = (size_t) sb.st_size;
-    if (size != INDEX_SIZE * sizeof(int16_t)) {
-        std::cerr << "table exists but is not " << INDEX_SIZE * sizeof(int16_t) << " bytes" << std::endl;
-        return {};
-    }
-
-    void* addr = mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
-    if (addr == MAP_FAILED) {
-        std::cerr << "Failed to mmap file\n";
-        return nullptr;
-    }
-    return addr;
-}
 
 bool fileExists(char* path) {
     return access(path, F_OK) == 0;
@@ -260,6 +238,7 @@ void reverseNitwitSeeds(void* deviceMansionTable) {
     for (auto& x : seeds) {
         x = convertEndian64(x);
     }
+    std::cout << seeds.front() << std::endl;
     auto results = reverseSeeds(deviceMansionTable, seeds);
     if (!writeI32be(sockfd, results.size())) throw std::runtime_error("wtf");
     for (const auto& r : results) {
@@ -273,44 +252,9 @@ void reverseNitwitSeeds(void* deviceMansionTable) {
     std::cerr << "sent " << results.size() << " results to nitwit" << std::endl;
 }
 
-void* loadSeedTable() {
-    void* deviceMansionTable;
-    auto err = cudaMalloc(&deviceMansionTable, INDEX_SIZE * sizeof(int16_t));
-    if (err != cudaSuccess) {
-        std::cerr << "Failed to allocate table on gpu (" << cudaGetErrorString(err) << ")" << std::endl;
-        exit(1);
-    }
-
-    std::vector<int16_t> seedTable;
-    auto file = mmapTable();
-    if (file) {
-        std::cerr << "Loading seed table from disk" << std::endl;
-        auto t1 = std::chrono::steady_clock::now();
-        seedTable.assign(INDEX_SIZE, 0);
-        memcpy(seedTable.data(), file, INDEX_SIZE * sizeof(int16_t));
-        auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t1);
-        munmap(file, INDEX_SIZE * sizeof(int16_t));
-        std::cerr << "Loaded seed table in " << millis.count() << "ms" << std::endl;
-    } else {
-        seedTable = createSeedTable();
-        std::ofstream out("mansion_table", std::ios::out | std::ios::binary);
-        if (!out) {
-            std::cerr << "Failed to open file for writing" << std::endl;
-        } else {
-            out.write((const char*)seedTable.data(), seedTable.size() * sizeof(int16_t));
-            out.close();
-        }
-    }
-    assert(seedTable.size() == INDEX_SIZE);
-    std::cerr << "Uploading to gpu" << std::endl;
-    checkCudaError(cudaMemcpy(deviceMansionTable, seedTable.data(), INDEX_SIZE * sizeof(int16_t), cudaMemcpyHostToDevice));
-
-    return deviceMansionTable;
-}
-
 int main(int argc, char** argv) {
     printCudaVersion();
-    void* deviceMansionTable = loadSeedTable();
+    int16_t* deviceMansionTable = createSeedTableGpu();
     if (argc <= 1) {
         while (true) {
             std::this_thread::sleep_for(std::chrono::seconds{120});
