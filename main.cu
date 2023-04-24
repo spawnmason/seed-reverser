@@ -3,12 +3,9 @@
 #include <vector>
 #include <charconv>
 #include <chrono>
-#include <cassert>
 #include <thread>
 
-#include <sys/mman.h>
 #include <sys/stat.h>
-#include <fcntl.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -51,9 +48,10 @@ constexpr int64_t TOTAL_MANSIONS = MANSIONS_IN_ROW * MANSIONS_IN_ROW;
 constexpr int64_t chunkZMultInv248 = 211541297333629LL; // https://www.wolframalpha.com/input?i=132897987541%5E-1+mod+2%5E48
 constexpr auto RAND_MASK = (1LL << 48) - 1;
 constexpr auto LOWER_32_MASK = (1LL << 32) - 1;
-constexpr auto INDEX_SIZE = (1LL << 32);
+constexpr auto TABLE_SIZE = (1LL << 32);
+constexpr auto SIZEOF_TABLE = TABLE_SIZE * sizeof(int16_t);
 
-__host__ __device__ int64_t woodlandMansionSeed(int chunkX, int chunkZ) { // from World and WoodlandMansion
+__device__ int64_t woodlandMansionSeed(int chunkX, int chunkZ) { // from World and WoodlandMansion
     return ((int64_t) chunkX * 341873128712LL + (int64_t) chunkZ * 132897987541LL + WORLD_SEED + (int64_t) 10387319) & RAND_MASK; // rand drops highest 16 bits anyway
 }
 
@@ -69,12 +67,12 @@ __global__ void writeToSeedTable(int16_t* table) {
 int16_t* createSeedTableGpu() {
     auto t1 = std::chrono::steady_clock::now();
     int16_t *deviceTablePtr;
-    auto err = cudaMalloc(&deviceTablePtr, INDEX_SIZE * sizeof(int16_t));
+    auto err = cudaMalloc(&deviceTablePtr, SIZEOF_TABLE);
     if (err != cudaSuccess) {
         std::cerr << "Failed to allocate table on gpu (" << cudaGetErrorString(err) << ")" << std::endl;
         exit(1);
     }
-    cudaMemset(deviceTablePtr, 0, INDEX_SIZE * sizeof(int16_t));
+    cudaMemset(deviceTablePtr, 0, SIZEOF_TABLE);
     const auto threadsPerBlock = 256;
     const auto numBlocks = (TOTAL_MANSIONS + threadsPerBlock - 1) / threadsPerBlock;
     writeToSeedTable<<<numBlocks, threadsPerBlock>>>(deviceTablePtr);
@@ -188,16 +186,16 @@ bool writeI64be(int fd, int64_t x) {
     return writeBytes(fd, &be, 8);
 }
 
-std::vector<Result> reverseSeeds(void* deviceMansionTable, const std::vector<int64_t>& seeds) {
+std::vector<Result> reverseSeeds(const int16_t* deviceMansionTable, const std::vector<int64_t>& seeds) {
     auto startTime = std::chrono::steady_clock::now();
 
     const auto* deviceInputSeeds = uploadBuffer(seeds.data(), seeds.size());
-    void* deviceResults;
+    Result* deviceResults;
     checkCudaError(cudaMalloc(&deviceResults, seeds.size() * sizeof(Result)));
 
     const auto threadsPerBlock = 256;
     const auto numBlocks = (seeds.size() + threadsPerBlock - 1) / threadsPerBlock;
-    computeSteps<<<numBlocks, threadsPerBlock>>>((int16_t*) deviceMansionTable, deviceInputSeeds, (Result*) deviceResults, seeds.size());
+    computeSteps<<<numBlocks, threadsPerBlock>>>((int16_t*) deviceMansionTable, deviceInputSeeds, deviceResults, seeds.size());
     cudaDeviceSynchronize();
 
     std::vector<Result> results(seeds.size());
@@ -209,7 +207,7 @@ std::vector<Result> reverseSeeds(void* deviceMansionTable, const std::vector<int
     return results;
 }
 
-void reverseNitwitSeeds(void* deviceMansionTable) {
+void reverseNitwitSeeds(const int16_t* deviceMansionTable) {
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     sockaddr_in server_addr{};
     server_addr.sin_family = AF_INET;
@@ -253,7 +251,7 @@ void reverseNitwitSeeds(void* deviceMansionTable) {
 
 int main(int argc, char** argv) {
     printCudaVersion();
-    int16_t* deviceMansionTable = createSeedTableGpu();
+    const int16_t* deviceMansionTable = createSeedTableGpu();
     if (argc <= 1) {
         while (true) {
             reverseNitwitSeeds(deviceMansionTable);
