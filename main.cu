@@ -40,7 +40,7 @@ std::vector<int64_t> readSeeds(char* path) {
     return seeds;
 }
 
-constexpr int64_t WORLD_SEED = -4172144997902289642LL;
+constexpr int64_t OVERWORLD_2B2T_SEED = -4172144997902289642LL;
 constexpr int64_t WOODLAND_BOUNDS = 23440;
 constexpr int64_t MANSIONS_IN_ROW = (WOODLAND_BOUNDS * 2 + 1);
 constexpr int64_t TOTAL_MANSIONS = MANSIONS_IN_ROW * MANSIONS_IN_ROW;
@@ -50,8 +50,8 @@ constexpr auto LOWER_32_MASK = (1LL << 32) - 1;
 constexpr auto TABLE_SIZE = (1LL << 32);
 constexpr auto SIZEOF_TABLE = TABLE_SIZE * sizeof(int16_t);
 
-__device__ int64_t woodlandMansionSeed(int chunkX, int chunkZ) { // from World and WoodlandMansion
-    return ((int64_t) chunkX * 341873128712LL + (int64_t) chunkZ * 132897987541LL + WORLD_SEED + (int64_t) 10387319) & RAND_MASK; // rand drops highest 16 bits anyway
+__device__ int64_t generalizedWoodlandMansionSeed(int chunkX, int chunkZ) { // from World and WoodlandMansion
+    return ((int64_t) chunkX * 341873128712LL + (int64_t) chunkZ * 132897987541LL + (int64_t) 10387319) & RAND_MASK; // rand drops highest 16 bits anyway
 }
 
 __global__ void writeToSeedTable(int16_t* table) {
@@ -59,7 +59,7 @@ __global__ void writeToSeedTable(int16_t* table) {
     if (tid >= TOTAL_MANSIONS) return;
     auto x = tid / MANSIONS_IN_ROW - WOODLAND_BOUNDS;
     auto z = tid % MANSIONS_IN_ROW - WOODLAND_BOUNDS;
-    auto seed = woodlandMansionSeed(x, z);
+    auto seed = generalizedWoodlandMansionSeed(x, z);
     table[seed & LOWER_32_MASK] = (int16_t) x;
 }
 
@@ -93,18 +93,19 @@ __device__ int64_t prevSeed(int64_t seed) {
 }
 
 __device__ int64_t reverseWoodlandZGivenX(int64_t seed48Bits, int chunkX) {
-    return (((seed48Bits - WORLD_SEED - 10387319 - (int64_t) chunkX * 341873128712LL)) * chunkZMultInv248) << 16 >> 16;
+    return (((seed48Bits - 10387319 - (int64_t) chunkX * 341873128712LL)) * chunkZMultInv248) << 16 >> 16;
 }
 
-__device__ bool isWoodlandSeed(const int16_t* table, int64_t seed, int& xOut, int64_t& zOut) {
-    const auto x = table[seed & LOWER_32_MASK];
-    const auto z = reverseWoodlandZGivenX(seed, x);
+__device__ bool isWoodlandSeed(const int16_t* table, int64_t seed, int& xOut, int64_t& zOut, int64_t worldSeed) {
+    const int64_t generalizedSeed = (seed - worldSeed) & RAND_MASK;
+    const auto x = table[generalizedSeed & LOWER_32_MASK];
+    const auto z = reverseWoodlandZGivenX(generalizedSeed, x);
     xOut = x;
     zOut = z;
     return z >= -WOODLAND_BOUNDS & z <= WOODLAND_BOUNDS;
 }
 
-__global__ void computeSteps(const int16_t* mansionTable, const int64_t* seedsArr, Result* resultArr, size_t numData) {
+__global__ void computeSteps(const int16_t* mansionTable, int64_t worldSeed, const int64_t* seedsArr, Result* resultArr, size_t numData) {
     auto tid = blockIdx.x * blockDim.x + threadIdx.x;
     [[unlikely]] if (tid >= numData) {
         return;
@@ -116,7 +117,7 @@ __global__ void computeSteps(const int16_t* mansionTable, const int64_t* seedsAr
     int steps = 0;
     int x;
     int64_t z;
-    while (!isWoodlandSeed(mansionTable, seed ^ 0x5DEECE66DLL, x, z)) {
+    while (!isWoodlandSeed(mansionTable, seed ^ 0x5DEECE66DLL, x, z, worldSeed)) {
         seed = prevSeed(seed);
         steps++;
     }
@@ -186,7 +187,8 @@ std::vector<Result> reverseSeeds(const int16_t* deviceMansionTable, const std::v
 
     const auto threadsPerBlock = 256;
     const auto numBlocks = (seeds.size() + threadsPerBlock - 1) / threadsPerBlock;
-    computeSteps<<<numBlocks, threadsPerBlock>>>((int16_t*) deviceMansionTable, deviceInputSeeds, deviceResults, seeds.size());
+    const auto worldSeed = OVERWORLD_2B2T_SEED;
+    computeSteps<<<numBlocks, threadsPerBlock>>>((int16_t*) deviceMansionTable, worldSeed, deviceInputSeeds, deviceResults, seeds.size());
     cudaDeviceSynchronize();
 
     std::vector<Result> results(seeds.size());
@@ -198,15 +200,15 @@ std::vector<Result> reverseSeeds(const int16_t* deviceMansionTable, const std::v
     return results;
 }
 
-void reverseNitwitSeeds(const int16_t* deviceMansionTable) {
+int32_t reverseNitwitSeeds(const int16_t* deviceMansionTable) {
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     sockaddr_in server_addr{};
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(3459);
-    inet_pton(AF_INET, "192.168.69.2", &server_addr.sin_addr);
+    inet_pton(AF_INET, "192.168.69.1", &server_addr.sin_addr);
     if (connect(sockfd, (sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
         std::cerr << "Failed to connect to nitwit" << std::endl;
-        return;
+        return 0;
     }
     const auto token = "def7fa9dd0c96bc1dcd2913d19120b7c89c026407fd67053774d316bd90b3459815479eef495f7f93f8f845c544515b77360b60e1214ed786820cb4d94e6abcd v1";
     writeI16be(sockfd, (int16_t) strlen(token));
@@ -214,7 +216,7 @@ void reverseNitwitSeeds(const int16_t* deviceMansionTable) {
     int32_t seedCount;
     if (!readBytes(sockfd, &seedCount, 4)) {
         std::cerr << "failed to read seed count" << std::endl;
-        return;
+        return 0;
     }
     seedCount = ntohl(seedCount);
     std::cerr << "nitwit gave us " << seedCount << " seeds" << std::endl;
@@ -222,7 +224,7 @@ void reverseNitwitSeeds(const int16_t* deviceMansionTable) {
     auto seedBytes = seeds.size() * sizeof(int64_t);
     if (!readBytes(sockfd, seeds.data(), seedBytes)) {
         std::cerr << "Failed to read seed bytes" << std::endl;
-        return;
+        return 0;
     }
     for (auto& x : seeds) {
         x = be64toh(x);
@@ -238,6 +240,7 @@ void reverseNitwitSeeds(const int16_t* deviceMansionTable) {
     close(sockfd);
 
     std::cerr << "sent " << results.size() << " results to nitwit" << std::endl;
+    return seedCount;
 }
 
 int main(int argc, char** argv) {
@@ -245,8 +248,10 @@ int main(int argc, char** argv) {
     const int16_t* deviceMansionTable = createSeedTableGpu();
     if (argc <= 1) {
         while (true) {
-            reverseNitwitSeeds(deviceMansionTable);
-            std::this_thread::sleep_for(std::chrono::seconds{120});
+            const auto count = reverseNitwitSeeds(deviceMansionTable);
+            if (count < 1000) {
+                std::this_thread::sleep_for(std::chrono::seconds{120});
+            }
         }
     } else {
         if (argc != 3) {
