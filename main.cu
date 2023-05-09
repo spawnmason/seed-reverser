@@ -207,7 +207,7 @@ int32_t reverseNitwitSeeds(const int16_t* deviceMansionTable) {
     sockaddr_in server_addr{};
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(3460);
-    inet_pton(AF_INET, "192.168.69.88", &server_addr.sin_addr);
+    inet_pton(AF_INET, "192.168.69.1", &server_addr.sin_addr);
     if (connect(sockfd, (sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
         std::cerr << "Failed to connect to nitwit" << std::endl;
         close(sockfd);
