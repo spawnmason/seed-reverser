@@ -213,7 +213,7 @@ int32_t reverseNitwitSeeds(const int16_t* deviceMansionTable) {
         close(sockfd);
         return 0;
     }
-    const auto token = "def7fa9dd0c96bc1dcd2913d19120b7c89c026407fd67053774d316bd90b3459815479eef495f7f93f8f845c544515b77360b60e1214ed786820cb4d94e6abcd v1";
+    const auto token = "def7fa9dd0c96bc1dcd2913d19120b7c89c026407fd67053774d316bd90b3459815479eef495f7f93f8f845c544515b77360b60e1214ed786820cb4d94e6abcd v2";
     writeI16be(sockfd, (int16_t) strlen(token));
     writeBytes(sockfd, token, strlen(token));
     int8_t dimension;
