@@ -252,12 +252,21 @@ int32_t reverseNitwitSeeds(const int16_t* deviceMansionTable) {
         x = be64toh(x);
     }
     auto results = reverseSeeds(deviceMansionTable, seeds, worldSeed);
-    if (!writeI32be(sockfd, results.size())) throw std::runtime_error("wtf");
+    if (!writeI32be(sockfd, (int32_t) results.size())) {
+        std::cerr << "Failed to results" << std::endl;
+        close(sockfd);
+        return 0;
+    }
     for (const auto& r : results) {
-        if (!writeI64be(sockfd, r.startSeed)) throw std::runtime_error("wtf");
-        if (!writeI32be(sockfd, r.steps)) throw std::runtime_error("wtf");
-        if (!writeI16be(sockfd, r.x)) throw std::runtime_error("wtf");
-        if (!writeI16be(sockfd, r.z)) throw std::runtime_error("wtf");
+        if (!writeI64be(sockfd, r.startSeed) ||
+            !writeI32be(sockfd, r.steps) ||
+            !writeI16be(sockfd, r.x) ||
+            !writeI16be(sockfd, r.z))
+        {
+            std::cerr << "Failed to write seed" << std::endl;
+            close(sockfd);
+            return 0;
+        }
     }
     close(sockfd);
 
