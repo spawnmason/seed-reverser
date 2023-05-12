@@ -4,6 +4,7 @@
 #include <charconv>
 #include <chrono>
 #include <thread>
+#include <bitset>
 
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -47,14 +48,22 @@ constexpr int64_t OVERWORLD_2B2T_SEED = -4172144997902289642LL;
 constexpr int64_t WOODLAND_BOUNDS = 23440;
 constexpr int64_t MANSIONS_IN_ROW = (WOODLAND_BOUNDS * 2 + 1);
 constexpr int64_t TOTAL_MANSIONS = MANSIONS_IN_ROW * MANSIONS_IN_ROW;
+constexpr int64_t END_CITY_BOUNDS = WOODLAND_BOUNDS * 4;
+constexpr int64_t CITIES_IN_ROW = (END_CITY_BOUNDS * 2 + 1);
+constexpr int64_t TOTAL_CITIES = CITIES_IN_ROW * CITIES_IN_ROW;
+
 constexpr int64_t chunkZMultInv248 = 211541297333629LL; // https://www.wolframalpha.com/input?i=132897987541%5E-1+mod+2%5E48
 constexpr auto RAND_MASK = (1LL << 48) - 1;
 constexpr auto LOWER_32_MASK = (1LL << 32) - 1;
+constexpr auto LOWER_36_MASK = (1LL << 36) - 1;
 constexpr auto TABLE_SIZE = (1LL << 32);
 constexpr auto SIZEOF_TABLE = TABLE_SIZE * sizeof(int16_t);
 
 __device__ int64_t generalizedWoodlandMansionSeed(int chunkX, int chunkZ) { // from World and WoodlandMansion
     return ((int64_t) chunkX * 341873128712LL + (int64_t) chunkZ * 132897987541LL + (int64_t) 10387319) & RAND_MASK; // rand drops highest 16 bits anyway
+}
+__device__ __host__ int64_t generalizedEndCitySeed(int chunkX, int chunkZ) { // from World and WoodlandMansion
+    return ((int64_t) chunkX * 341873128711LL + (int64_t) chunkZ * 132897987541LL + (int64_t) 10387313) & RAND_MASK; // rand drops highest 16 bits anyway
 }
 
 __global__ void writeToSeedTable(int16_t* table) {
@@ -202,7 +211,7 @@ std::vector<Result> reverseSeeds(const int16_t* deviceMansionTable, const std::v
     return results;
 }
 
-int32_t reverseNitwitSeeds(const int16_t* deviceMansionTable) {
+int32_t reverseSeedsFromAPI(const int16_t* deviceMansionTable) {
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     sockaddr_in server_addr{};
     server_addr.sin_family = AF_INET;
@@ -213,96 +222,113 @@ int32_t reverseNitwitSeeds(const int16_t* deviceMansionTable) {
         close(sockfd);
         return 0;
     }
-    const auto token = "def7fa9dd0c96bc1dcd2913d19120b7c89c026407fd67053774d316bd90b3459815479eef495f7f93f8f845c544515b77360b60e1214ed786820cb4d94e6abcd v2";
+    const auto token = "def7fa9dd0c96bc1dcd2913d19120b7c89c026407fd67053774d316bd90b3459815479eef495f7f93f8f845c544515b77360b60e1214ed786820cb4d94e6abcd v3";
     writeI16be(sockfd, (int16_t) strlen(token));
     writeBytes(sockfd, token, strlen(token));
-    int8_t dimension;
-    if (!readBytes(sockfd, &dimension, 1)) {
-        std::cerr << "failed to read dimension";
+    int8_t numWorlds;
+    if (!readBytes(sockfd, &numWorlds, 1)) {
+        std::cerr << "failed to read number of worlds";
         close(sockfd);
         return 0;
     }
-    if (dimension != 0) {
-        close(sockfd);
-        return 0;
-    }
-    int64_t worldSeed;
-    if (!readBytes(sockfd, &worldSeed, 8)) {
-        std::cerr << "failed to read world seed";
-        close(sockfd);
-        return 0;
-    }
-    worldSeed = be64toh(worldSeed);
-    int32_t seedCount;
-    if (!readBytes(sockfd, &seedCount, 4)) {
-        std::cerr << "failed to read seed count" << std::endl;
-        close(sockfd);
-        return 0;
-    }
-    seedCount = ntohl(seedCount);
-    std::cerr << "nitwit gave us " << seedCount << " seeds" << std::endl;
-    std::vector<int64_t> seeds(seedCount);
-    auto seedBytes = seeds.size() * sizeof(int64_t);
-    if (!readBytes(sockfd, seeds.data(), seedBytes)) {
-        std::cerr << "Failed to read seed bytes" << std::endl;
-        close(sockfd);
-        return 0;
-    }
-    for (auto& x : seeds) {
-        x = be64toh(x);
-    }
-    auto results = reverseSeeds(deviceMansionTable, seeds, worldSeed);
-    if (!writeI32be(sockfd, (int32_t) results.size())) {
-        std::cerr << "Failed to results" << std::endl;
-        close(sockfd);
-        return 0;
-    }
-    for (const auto& r : results) {
-        if (!writeI64be(sockfd, r.startSeed) ||
-            !writeI32be(sockfd, r.steps) ||
-            !writeI16be(sockfd, r.x) ||
-            !writeI16be(sockfd, r.z))
-        {
-            std::cerr << "Failed to write seed" << std::endl;
+    int totalResults = 0;
+    for (int i = 0; i < numWorlds; i++ ) {
+        int8_t dimension;
+        if (!readBytes(sockfd, &dimension, 1)) {
+            std::cerr << "failed to read dimension";
             close(sockfd);
             return 0;
         }
+        if (dimension != 0) { // TODO: add support for the end
+            close(sockfd);
+            return 0;
+        }
+        int64_t worldSeed;
+        if (!readBytes(sockfd, &worldSeed, 8)) {
+            std::cerr << "failed to read world seed";
+            close(sockfd);
+            return 0;
+        }
+        worldSeed = be64toh(worldSeed);
+        int32_t seedCount;
+        if (!readBytes(sockfd, &seedCount, 4)) {
+            std::cerr << "failed to read seed count" << std::endl;
+            close(sockfd);
+            return 0;
+        }
+        seedCount = ntohl(seedCount);
+        std::cerr << "nitwit gave us " << seedCount << " seeds" << std::endl;
+        if (seedCount == 0) continue; // important to match behavior or master
+        std::vector<int64_t> seeds(seedCount);
+        auto seedBytes = seeds.size() * sizeof(int64_t);
+        if (!readBytes(sockfd, seeds.data(), seedBytes)) {
+            std::cerr << "Failed to read seed bytes" << std::endl;
+            close(sockfd);
+            return 0;
+        }
+        for (auto& x : seeds) {
+            x = be64toh(x);
+        }
+        auto results = reverseSeeds(deviceMansionTable, seeds, worldSeed);
+        if (!writeI32be(sockfd, (int32_t) results.size())) {
+            std::cerr << "Failed to results" << std::endl;
+            close(sockfd);
+            return 0;
+        }
+        for (const auto& r : results) {
+            if (!writeI64be(sockfd, r.startSeed) ||
+                !writeI32be(sockfd, r.steps) ||
+                !writeI16be(sockfd, r.x) ||
+                !writeI16be(sockfd, r.z))
+            {
+                std::cerr << "Failed to write seed" << std::endl;
+                close(sockfd);
+                return 0;
+            }
+        }
+        totalResults += results.size();
     }
+
     close(sockfd);
 
-    std::cerr << "sent " << results.size() << " results to nitwit" << std::endl;
-    return seedCount;
+    std::cerr << "sent " << totalResults << " results to nitwit" << std::endl;
+    return totalResults;
 }
 
-int16_t* mmapTable() {
-    int fd = open("mansion_table", O_RDONLY);
+std::pair<int, void*> mmapFile(const char* path, int64_t size) {
+    int fd = open(path, O_RDWR);
     if (fd == -1) {
-        return {};
+        exit(1);
     }
 
     struct stat sb{};
     if (fstat(fd, &sb) == -1) {
         std::cerr << "Failed to get file size\n";
-        return {};
+        exit(1);
     }
-    const auto size = (size_t) sb.st_size;
-    if (size != SIZEOF_TABLE) {
-        std::cerr << "table exists but is not " << SIZEOF_TABLE << " bytes" << std::endl;
-        return {};
+    const auto statSize = (size_t) sb.st_size;
+    if (statSize != size) {
+        std::cerr << "table exists but is not " << size << " bytes" << std::endl;
+        exit(1);
     }
 
-    void* addr = mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
+    void* addr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (addr == MAP_FAILED) {
         std::cerr << "Failed to mmap file\n";
-        return nullptr;
+        exit(1);
     }
-    return (int16_t*) addr;
+    return {fd, addr};
+}
+
+int16_t* mmapTable() {
+    return (int16_t*) mmapFile("mansion_table", SIZEOF_TABLE).second;
 }
 
 int createEmptyFile(const char* fileName, int64_t fileSize){
     FILE* fp;
     fp = fopen(fileName, "wb");
     if(fp == NULL){
+        std::cout << "Failed to create file" << std::endl;
         return -1; //error opening file
     }
     fseek(fp, fileSize-1, SEEK_SET);
@@ -347,7 +373,7 @@ int main(int argc, char** argv) {
     const int16_t* deviceMansionTable = createSeedTableGpu();
     if (argc <= 1) {
         while (true) {
-            const auto count = reverseNitwitSeeds(deviceMansionTable);
+            const auto count = reverseSeedsFromAPI(deviceMansionTable);
             if (count < 1000) {
                 std::this_thread::sleep_for(std::chrono::seconds{120});
             }
