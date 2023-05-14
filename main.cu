@@ -416,7 +416,7 @@ int32_t reverseSeedsFromAPI(const int16_t* deviceMansionTable, const Int3* endTa
             close(sockfd);
             return 0;
         }
-        if (dimension != 0) { // TODO: add support for the end
+        if (dimension != 0 && dimension != 1) {
             close(sockfd);
             return 0;
         }
@@ -446,7 +446,12 @@ int32_t reverseSeedsFromAPI(const int16_t* deviceMansionTable, const Int3* endTa
         for (auto& x : seeds) {
             x = be64toh(x);
         }
-        auto results = reverseOverworldSeeds(deviceMansionTable, seeds, worldSeed);
+        std::vector<Result> results;
+        if (dimension == 0) {
+           results = reverseOverworldSeeds(deviceMansionTable, seeds, worldSeed);
+        } else {
+            results = reverseEndSeeds(endTable, seeds, worldSeed);
+        }
         if (!writeI32be(sockfd, (int32_t) results.size())) {
             std::cerr << "Failed to results" << std::endl;
             close(sockfd);
