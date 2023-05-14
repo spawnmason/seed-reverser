@@ -336,7 +336,7 @@ const Int3* createEndCityTable() {
     if (fd == -1) {
         if (errno == ENOENT) {
             std::cerr << "end_table doesn't exist, creating it now..." << std::endl;
-            fd = open("end_table", O_CREAT | O_RDWR, 0666);
+            fd = open("end_table_temp", O_CREAT | O_TRUNC | O_WRONLY, 0666);
             if (fd == -1) {
                 std::cerr << "fail xd" << std::endl;
                 exit(1);
@@ -374,6 +374,10 @@ const Int3* createEndCityTable() {
             }
             cudaFree(deviceBuffer);
             close(fd);
+            if (rename("end_table_temp", "end_table") == -1) {
+                std::cerr << "failed to rename end_table_temp to end_table" << strerror(errno) << std::endl;
+                exit(1);
+            }
             return createEndCityTable();
         } else {
             std::cerr << "Failed to open end_table (" << strerror(errno) << ")" << std::endl;
