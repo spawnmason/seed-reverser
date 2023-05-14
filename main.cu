@@ -323,23 +323,12 @@ void bigWrite(int fd, const char* bytes, size_t size) {
     }
 }
 
-void writeEndTableGpu(Int3* hostMem, Int3* deviceMem, int64_t chunkSizeBytes, int64_t min, int64_t maxExclusive) {
-    auto t1 = std::chrono::steady_clock::now();
+void writeEndTableGpuAsync(Int3* deviceMem, int64_t chunkSizeBytes, int64_t min, int64_t maxExclusive) {
     cudaMemset(deviceMem, 0, chunkSizeBytes);
     const auto threadsPerBlock = 256;
     const auto numBlocks = (TOTAL_CITIES + threadsPerBlock - 1) / threadsPerBlock;
 
     writeToEndSeedTable<<<numBlocks, threadsPerBlock>>>(deviceMem, min, maxExclusive);
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("Kernel launch failed: %s\n", cudaGetErrorString(err));
-        exit(1);
-    }
-    cudaDeviceSynchronize();
-    cudaMemcpy(hostMem, deviceMem, chunkSizeBytes, cudaMemcpyDeviceToHost);
-    cudaDeviceSynchronize();
-    auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t1);
-    std::cerr << "wrote table in " << millis.count() << "ms" << std::endl;
 }
 
 const Int3* createEndCityTable() {
@@ -364,17 +353,26 @@ const Int3* createEndCityTable() {
                 std::cerr << "Failed to allocate buffer on gpu (" << cudaGetErrorString(err) << ")" << std::endl;
                 exit(1);
             }
+            // start the computation so the first iteration has a result (this is sort of like the -1st iteration)
+            writeEndTableGpuAsync(deviceBuffer, chunkSize * sizeof(Int3), 0, chunkSize);
             for (int i = 0; i < 32; i++) {
                 std::cout << "i = " << i << std::endl;
-                //memset(buffer, 0, chunkSize * sizeof(Int3));
-                auto min = chunkSize * i;
-                auto max = min + chunkSize;
-                //writeEndTable(buffer, min, max, i);
-                writeEndTableGpu(buffer, deviceBuffer, chunkSize * sizeof(Int3), min, max);
-                bigWrite(fd, (const char*) buffer, chunkSize * sizeof(Int3));
+                // synchronized the call from the previous iteration
+                cudaDeviceSynchronize();
+                cudaMemcpy(buffer, deviceBuffer, chunkSize * sizeof(Int3), cudaMemcpyDeviceToHost);
+                cudaDeviceSynchronize();
+                if (i < 32 - 1) {
+                    auto min = chunkSize * (i + 1);
+                    auto max = min + chunkSize;
+                    // start the computation for the next iteration, this will run at the same time as the write to disk
+                    writeEndTableGpuAsync(deviceBuffer, chunkSize * sizeof(Int3), min, max);
+                    bigWrite(fd, (const char*) buffer, chunkSize * sizeof(Int3));
+                } else {
+                    // on the last iteration we don't need the gpu to do anything
+                    bigWrite(fd, (const char*) buffer, chunkSize * sizeof(Int3));
+                }
             }
             cudaFree(deviceBuffer);
-
             close(fd);
             return createEndCityTable();
         } else {
