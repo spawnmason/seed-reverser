@@ -107,7 +107,7 @@ int16_t* createSeedTableGpu() {
     writeToSeedTable<<<numBlocks, threadsPerBlock>>>(deviceTablePtr);
     cudaDeviceSynchronize();
     auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t1);
-    std::cerr << "generated table in " << millis.count() << "ms" << std::endl;
+    std::cerr << "generated mansion table in " << millis.count() << "ms" << std::endl;
     return deviceTablePtr;
 }
 
@@ -331,7 +331,7 @@ void writeEndTableGpuAsync(Int3* deviceMem, int64_t chunkSizeBytes, int64_t min,
     writeToEndSeedTable<<<numBlocks, threadsPerBlock>>>(deviceMem, min, maxExclusive);
 }
 
-const Int3* createEndCityTable() {
+const Int3* getOrCreateEndCityTable() {
     int fd = open("end_table", O_RDONLY);
     if (fd == -1) {
         if (errno == ENOENT) {
@@ -356,7 +356,7 @@ const Int3* createEndCityTable() {
             // start the computation so the first iteration has a result (this is sort of like the -1st iteration)
             writeEndTableGpuAsync(deviceBuffer, chunkSize * sizeof(Int3), 0, chunkSize);
             for (int i = 0; i < 32; i++) {
-                std::cout << "i = " << i << std::endl;
+                std::cout << "creating end city table " << (i + 1) << "/32" << std::endl;
                 // synchronized the call from the previous iteration
                 cudaDeviceSynchronize();
                 cudaMemcpy(buffer, deviceBuffer, chunkSize * sizeof(Int3), cudaMemcpyDeviceToHost);
@@ -378,7 +378,8 @@ const Int3* createEndCityTable() {
                 std::cerr << "failed to rename end_table_temp to end_table" << strerror(errno) << std::endl;
                 exit(1);
             }
-            return createEndCityTable();
+            // we created the file, the happy path should work now
+            return getOrCreateEndCityTable();
         } else {
             std::cerr << "Failed to open end_table (" << strerror(errno) << ")" << std::endl;
             exit(1);
@@ -517,12 +518,8 @@ std::vector<Result> reverseSeedsCpu(const int16_t* table, const std::vector<int6
 }
 
 int main(int argc, char** argv) {
-    //std::cout << 2147479552 << std::endl;
-    //std::cout << (((1LL << 36) / 8)) * sizeof(Int3) << std::endl;
-    //return 0;
     printCudaVersion();
-    const Int3* endCityTable = createEndCityTable();
-    return 0;
+    const Int3* endCityTable = getOrCreateEndCityTable();
     const int16_t* deviceMansionTable = createSeedTableGpu();
     if (argc <= 1) {
         while (true) {
