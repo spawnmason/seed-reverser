@@ -81,6 +81,18 @@ __global__ void writeToSeedTable(int16_t* table) {
     table[seed & LOWER_32_MASK] = (int16_t) x;
 }
 
+__global__ void writeToEndSeedTable(Int3* table, int64_t min, int64_t maxExclusive) {
+    int64_t tid = (int64_t)blockIdx.x * (int64_t)blockDim.x + (int64_t)threadIdx.x;
+    if (tid >= TOTAL_CITIES) return;
+    auto x = tid / CITIES_IN_ROW - END_CITY_BOUNDS;
+    auto z = tid % CITIES_IN_ROW - END_CITY_BOUNDS;
+    auto seed = generalizedEndCitySeed(x, z);
+    auto index = seed & LOWER_36_MASK;
+    if (index >= min && index < maxExclusive) {
+        table[index - min] = Int3{(int) x};
+    }
+}
+
 int16_t* createSeedTableGpu() {
     auto t1 = std::chrono::steady_clock::now();
     int16_t *deviceTablePtr;
@@ -311,23 +323,24 @@ void bigWrite(int fd, const char* bytes, size_t size) {
     }
 }
 
-/*void writeEndTableGpu(const Int3* hostMem, Int3* deviceMem) {
+void writeEndTableGpu(Int3* hostMem, Int3* deviceMem, int64_t chunkSizeBytes, int64_t min, int64_t maxExclusive) {
     auto t1 = std::chrono::steady_clock::now();
-    int16_t *deviceTablePtr;
-    auto err = cudaMalloc(&deviceTablePtr, SIZEOF_TABLE);
+    cudaMemset(deviceMem, 0, chunkSizeBytes);
+    const auto threadsPerBlock = 256;
+    const auto numBlocks = (TOTAL_CITIES + threadsPerBlock - 1) / threadsPerBlock;
+
+    writeToEndSeedTable<<<numBlocks, threadsPerBlock>>>(deviceMem, min, maxExclusive);
+    cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
-        std::cerr << "Failed to allocate table on gpu (" << cudaGetErrorString(err) << ")" << std::endl;
+        printf("Kernel launch failed: %s\n", cudaGetErrorString(err));
         exit(1);
     }
-    cudaMemset(deviceTablePtr, 0, SIZEOF_TABLE);
-    const auto threadsPerBlock = 256;
-    const auto numBlocks = (TOTAL_MANSIONS + threadsPerBlock - 1) / threadsPerBlock;
-    writeToSeedTable<<<numBlocks, threadsPerBlock>>>(deviceTablePtr);
+    cudaDeviceSynchronize();
+    cudaMemcpy(hostMem, deviceMem, chunkSizeBytes, cudaMemcpyDeviceToHost);
     cudaDeviceSynchronize();
     auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t1);
-    std::cerr << "generated table in " << millis.count() << "ms" << std::endl;
-    return deviceTablePtr;
-}*/
+    std::cerr << "wrote table in " << millis.count() << "ms" << std::endl;
+}
 
 const Int3* createEndCityTable() {
     int fd = open("end_table", O_RDONLY);
@@ -343,16 +356,24 @@ const Int3* createEndCityTable() {
                 std::cerr << "Failed to set ftruncate() to " << SIZEOF_END_TABLE << std::endl;
                 exit(1);
             }
-            constexpr int64_t chunkSize = (1LL << 36) / 8;
+            constexpr int64_t chunkSize = (1LL << 36) / 32;
             auto* buffer = new Int3[chunkSize];
-            for (int i = 0; i < 8; i++) {
+            Int3* deviceBuffer;
+            auto err = cudaMalloc(&deviceBuffer, chunkSize * sizeof(Int3));
+            if (err != cudaSuccess) {
+                std::cerr << "Failed to allocate buffer on gpu (" << cudaGetErrorString(err) << ")" << std::endl;
+                exit(1);
+            }
+            for (int i = 0; i < 32; i++) {
                 std::cout << "i = " << i << std::endl;
-                memset(buffer, 0, chunkSize * sizeof(Int3));
+                //memset(buffer, 0, chunkSize * sizeof(Int3));
                 auto min = chunkSize * i;
                 auto max = min + chunkSize;
-                writeEndTable(buffer, min, max, i);
+                //writeEndTable(buffer, min, max, i);
+                writeEndTableGpu(buffer, deviceBuffer, chunkSize * sizeof(Int3), min, max);
                 bigWrite(fd, (const char*) buffer, chunkSize * sizeof(Int3));
             }
+            cudaFree(deviceBuffer);
 
             close(fd);
             return createEndCityTable();
@@ -449,7 +470,7 @@ int32_t reverseSeedsFromAPI(const int16_t* deviceMansionTable, const Int3* endTa
 }
 
 
-int createEmptyFile(const char* fileName, int64_t fileSize){
+int createEmptyFile(const char* fileName, int64_t fileSize) {
     FILE* fp;
     fp = fopen(fileName, "wb");
     if(fp == NULL){
@@ -499,8 +520,8 @@ int main(int argc, char** argv) {
     //return 0;
     printCudaVersion();
     const Int3* endCityTable = createEndCityTable();
-    const int16_t* deviceMansionTable = createSeedTableGpu();
     return 0;
+    const int16_t* deviceMansionTable = createSeedTableGpu();
     if (argc <= 1) {
         while (true) {
             const auto count = reverseSeedsFromAPI(deviceMansionTable, endCityTable);
