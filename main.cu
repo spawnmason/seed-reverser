@@ -332,11 +332,11 @@ void writeEndTableGpuAsync(Int3* deviceMem, int64_t chunkSizeBytes, int64_t min,
 }
 
 const Int3* getOrCreateEndCityTable() {
-    int fd = open("end_table", O_RDONLY);
+    int fd = open("/data/end_table", O_RDONLY);
     if (fd == -1) {
         if (errno == ENOENT) {
             std::cerr << "end_table doesn't exist, creating it now..." << std::endl;
-            fd = open("end_table_temp", O_CREAT | O_TRUNC | O_WRONLY, 0666);
+            fd = open("/data/end_table_temp", O_CREAT | O_TRUNC | O_WRONLY, 0666);
             if (fd == -1) {
                 std::cerr << "fail xd" << std::endl;
                 exit(1);
@@ -374,7 +374,7 @@ const Int3* getOrCreateEndCityTable() {
             }
             cudaFree(deviceBuffer);
             close(fd);
-            if (rename("end_table_temp", "end_table") == -1) {
+            if (rename("/data/end_table_temp", "/data/end_table") == -1) {
                 std::cerr << "failed to rename end_table_temp to end_table" << strerror(errno) << std::endl;
                 exit(1);
             }
