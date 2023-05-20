@@ -2,7 +2,7 @@
 FROM nvidia/cuda:11.4.0-devel-ubuntu20.04
 
 # Set the working directory to /app
-WORKDIR /app
+WORKDIR /data
 
 # Install any necessary dependencies
 RUN apt-get update && apt-get install -y build-essential
