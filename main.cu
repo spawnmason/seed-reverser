@@ -69,7 +69,7 @@ __device__ __host__ int64_t generalizedWoodlandMansionSeed(int chunkX, int chunk
     return ((int64_t) chunkX * 341873128712LL + (int64_t) chunkZ * 132897987541LL + (int64_t) 10387319) & RAND_MASK; // rand drops highest 16 bits anyway
 }
 __device__ __host__ int64_t generalizedEndCitySeed(int chunkX, int chunkZ) { // from World and WoodlandMansion
-    return ((int64_t) chunkX * 341873128711LL + (int64_t) chunkZ * 132897987541LL + (int64_t) 10387313) & RAND_MASK; // rand drops highest 16 bits anyway
+    return ((int64_t) chunkX * 341873128712LL + (int64_t) chunkZ * 132897987541LL + (int64_t) 10387313) & RAND_MASK; // rand drops highest 16 bits anyway
 }
 
 __global__ void writeToSeedTable(int16_t* table) {
