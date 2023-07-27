@@ -68,7 +68,7 @@ constexpr auto SIZEOF_END_TABLE = END_TABLE_SIZE * sizeof(Int3);
 __device__ __host__ int64_t generalizedWoodlandMansionSeed(int chunkX, int chunkZ) { // from World and WoodlandMansion
     return ((int64_t) chunkX * 341873128712LL + (int64_t) chunkZ * 132897987541LL + (int64_t) 10387319) & RAND_MASK; // rand drops highest 16 bits anyway
 }
-__device__ __host__ int64_t generalizedEndCitySeed(int chunkX, int chunkZ) { // from World and WoodlandMansion
+__device__ __host__ int64_t generalizedEndCitySeed(int chunkX, int chunkZ) { // from World and end city
     return ((int64_t) chunkX * 341873128712LL + (int64_t) chunkZ * 132897987541LL + (int64_t) 10387313) & RAND_MASK; // rand drops highest 16 bits anyway
 }
 
@@ -139,12 +139,30 @@ __device__ __host__ bool isWoodlandSeed(const int16_t* table, int64_t seed, int&
     return z >= -WOODLAND_BOUNDS & z <= WOODLAND_BOUNDS;
 }
 
-bool isEndSeed(const Int3* table, int64_t seed, int& xOut, int64_t& zOut, int64_t worldSeed) {
+bool endValidSlow(int64_t seed, int& xOut, int64_t& zOut, int64_t worldSeed) {
+    const int64_t generalizedSeed = (seed - worldSeed) & RAND_MASK;
+    for (int x = -END_CITY_BOUNDS; x <= END_CITY_BOUNDS; x++) {
+        int64_t z = reverseEndZGivenX(generalizedSeed, x);
+        if (z >= -END_CITY_BOUNDS && z <= END_CITY_BOUNDS) {
+            xOut = x;
+            zOut = z;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool isEndSeed(const Int3* table, int64_t seed, int& xOut, int64_t& zOut, int64_t worldSeed, int steps) {
     const int64_t generalizedSeed = (seed - worldSeed) & RAND_MASK;
     const auto x = table[generalizedSeed & LOWER_36_MASK].i;
     const auto z = reverseEndZGivenX(generalizedSeed, x);
     xOut = x;
     zOut = z;
+    if (steps == 6313) {
+        //std::cout << "seed=" << seed << std::endl;
+        std::cout << "x=" << x << " z=" << z << std::endl;
+        exit(0);
+    }
     return z >= -END_CITY_BOUNDS & z <= END_CITY_BOUNDS;
 }
 
@@ -247,10 +265,12 @@ Result reverseEndSeed(const Int3* table, int64_t seed, int64_t worldSeed) {
     int steps = 0;
     int x;
     int64_t z;
-    while (!isEndSeed(table, seed ^ 0x5DEECE66DLL, x, z, worldSeed)) {
+    //while (!isEndSeed(table, seed ^ 0x5DEECE66DLL, x, z, worldSeed, steps)) {
+    while (!endValidSlow(seed ^ 0x5DEECE66DLL, x, z, worldSeed)) {
         seed = prevSeed(seed);
         steps++;
     }
+    std::cout << "x=" << x << " z=" << z << std::endl;
     return {.startSeed = startSeed, .x = x, .z = (int) z, .steps = steps};
 }
 
@@ -258,8 +278,11 @@ std::vector<Result> reverseEndSeeds(const Int3* endTable, const std::vector<int6
     auto startTime = std::chrono::steady_clock::now();
     std::vector<Result> results;
     results.reserve(seeds.size());
+    std::cout << "reversing end seeds..." << std::endl;
     for (auto seed : seeds) {
-        results.push_back(reverseEndSeed(endTable, seed, worldSeed));
+        auto result = reverseEndSeed(endTable, seed, worldSeed);
+        results.push_back(result);
+        std::cout << "end result: " << result.steps << std::endl;
     }
     auto execTime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime).count();
     std::cerr << "Reversed " << seeds.size() << " end seeds in " << execTime << "ms" << std::endl;
@@ -373,6 +396,7 @@ const Int3* getOrCreateEndCityTable() {
                 }
             }
             cudaFree(deviceBuffer);
+            delete[] buffer;
             close(fd);
             if (rename("end_table_temp", "end_table") == -1) {
                 std::cerr << "failed to rename end_table_temp to end_table" << strerror(errno) << std::endl;
@@ -434,7 +458,7 @@ int32_t reverseSeedsFromAPI(const int16_t* deviceMansionTable, const Int3* endTa
             return 0;
         }
         seedCount = ntohl(seedCount);
-        std::cerr << "nitwit gave us " << seedCount << " seeds" << std::endl;
+        std::cerr << "nitwit gave us " << seedCount << " seeds for dimension " << (int)dimension << std::endl;
         if (seedCount == 0) continue; // important to match behavior or master
         std::vector<int64_t> seeds(seedCount);
         auto seedBytes = seeds.size() * sizeof(int64_t);
@@ -525,6 +549,18 @@ std::vector<Result> reverseSeedsCpu(const int16_t* table, const std::vector<int6
 int main(int argc, char** argv) {
     printCudaVersion();
     const Int3* endCityTable = getOrCreateEndCityTable();
+    // x=78568 z=5572
+    // end result: 6313
+    /*auto seed = generalizedEndCitySeed(78568, 5572);
+    int xOut;
+    int64_t zOut;
+    if (endValidSlow(seed, xOut, zOut, 1434823964849314312LL)) {
+        std::cout << "is end seed (x=" << xOut << " z=" << zOut << ")" << std::endl;
+    }
+    auto index = seed & LOWER_36_MASK;
+    auto x = endCityTable[index].i;
+    std::cout << x << std::endl;
+    return 0;*/
     const int16_t* deviceMansionTable = createSeedTableGpu();
     if (argc <= 1) {
         while (true) {
