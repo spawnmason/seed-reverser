@@ -52,9 +52,6 @@ constexpr int64_t OVERWORLD_2B2T_SEED = -4172144997902289642LL;
 constexpr int64_t WOODLAND_BOUNDS = 23440;
 constexpr int64_t MANSIONS_IN_ROW = (WOODLAND_BOUNDS * 2 + 1);
 constexpr int64_t TOTAL_MANSIONS = MANSIONS_IN_ROW * MANSIONS_IN_ROW;
-constexpr int64_t END_CITY_BOUNDS = WOODLAND_BOUNDS * 4;
-constexpr int64_t CITIES_IN_ROW = (END_CITY_BOUNDS * 2 + 1);
-constexpr int64_t TOTAL_CITIES = CITIES_IN_ROW * CITIES_IN_ROW;
 
 constexpr int64_t chunkZMultInv248 = 211541297333629LL; // https://www.wolframalpha.com/input?i=132897987541%5E-1+mod+2%5E48
 constexpr auto RAND_MASK = (1LL << 48) - 1;
@@ -62,14 +59,9 @@ constexpr auto LOWER_32_MASK = (1LL << 32) - 1;
 constexpr auto LOWER_36_MASK = (1LL << 36) - 1;
 constexpr auto TABLE_SIZE = (1LL << 32);
 constexpr auto SIZEOF_TABLE = TABLE_SIZE * sizeof(int16_t);
-constexpr auto END_TABLE_SIZE = (1LL << 36);
-constexpr auto SIZEOF_END_TABLE = END_TABLE_SIZE * sizeof(Int3);
 
 __device__ __host__ int64_t generalizedWoodlandMansionSeed(int chunkX, int chunkZ) { // from World and WoodlandMansion
     return ((int64_t) chunkX * 341873128712LL + (int64_t) chunkZ * 132897987541LL + (int64_t) 10387319) & RAND_MASK; // rand drops highest 16 bits anyway
-}
-__device__ __host__ int64_t generalizedEndCitySeed(int chunkX, int chunkZ) { // from World and end city
-    return ((int64_t) chunkX * 341873128712LL + (int64_t) chunkZ * 132897987541LL + (int64_t) 10387313) & RAND_MASK; // rand drops highest 16 bits anyway
 }
 
 __global__ void writeToSeedTable(int16_t* table) {
@@ -79,18 +71,6 @@ __global__ void writeToSeedTable(int16_t* table) {
     auto z = tid % MANSIONS_IN_ROW - WOODLAND_BOUNDS;
     auto seed = generalizedWoodlandMansionSeed(x, z);
     table[seed & LOWER_32_MASK] = (int16_t) x;
-}
-
-__global__ void writeToEndSeedTable(Int3* table, int64_t min, int64_t maxExclusive) {
-    int64_t tid = (int64_t)blockIdx.x * (int64_t)blockDim.x + (int64_t)threadIdx.x;
-    if (tid >= TOTAL_CITIES) return;
-    auto x = tid / CITIES_IN_ROW - END_CITY_BOUNDS;
-    auto z = tid % CITIES_IN_ROW - END_CITY_BOUNDS;
-    auto seed = generalizedEndCitySeed(x, z);
-    auto index = seed & LOWER_36_MASK;
-    if (index >= min && index < maxExclusive) {
-        table[index - min] = Int3{(int) x};
-    }
 }
 
 int16_t* createSeedTableGpu() {
@@ -137,33 +117,6 @@ __device__ __host__ bool isWoodlandSeed(const int16_t* table, int64_t seed, int&
     xOut = x;
     zOut = z;
     return z >= -WOODLAND_BOUNDS & z <= WOODLAND_BOUNDS;
-}
-
-bool endValidSlow(int64_t seed, int& xOut, int64_t& zOut, int64_t worldSeed) {
-    const int64_t generalizedSeed = (seed - worldSeed) & RAND_MASK;
-    for (int x = -END_CITY_BOUNDS; x <= END_CITY_BOUNDS; x++) {
-        int64_t z = reverseEndZGivenX(generalizedSeed, x);
-        if (z >= -END_CITY_BOUNDS && z <= END_CITY_BOUNDS) {
-            xOut = x;
-            zOut = z;
-            return true;
-        }
-    }
-    return false;
-}
-
-bool isEndSeed(const Int3* table, int64_t seed, int& xOut, int64_t& zOut, int64_t worldSeed, int steps) {
-    const int64_t generalizedSeed = (seed - worldSeed) & RAND_MASK;
-    const auto x = table[generalizedSeed & LOWER_36_MASK].i;
-    const auto z = reverseEndZGivenX(generalizedSeed, x);
-    xOut = x;
-    zOut = z;
-    if (steps == 6313) {
-        //std::cout << "seed=" << seed << std::endl;
-        std::cout << "x=" << x << " z=" << z << std::endl;
-        exit(0);
-    }
-    return z >= -END_CITY_BOUNDS & z <= END_CITY_BOUNDS;
 }
 
 __global__ void computeSteps(const int16_t* mansionTable, int64_t worldSeed, const int64_t* seedsArr, Result* resultArr, size_t numData) {
@@ -260,35 +213,6 @@ std::vector<Result> reverseOverworldSeeds(const int16_t* deviceMansionTable, con
     return results;
 }
 
-Result reverseEndSeed(const Int3* table, int64_t seed, int64_t worldSeed) {
-    const auto startSeed = seed;
-    int steps = 0;
-    int x;
-    int64_t z;
-    //while (!isEndSeed(table, seed ^ 0x5DEECE66DLL, x, z, worldSeed, steps)) {
-    while (!endValidSlow(seed ^ 0x5DEECE66DLL, x, z, worldSeed)) {
-        seed = prevSeed(seed);
-        steps++;
-    }
-    std::cout << "x=" << x << " z=" << z << std::endl;
-    return {.startSeed = startSeed, .x = x, .z = (int) z, .steps = steps};
-}
-
-std::vector<Result> reverseEndSeeds(const Int3* endTable, const std::vector<int64_t>& seeds, int64_t worldSeed) {
-    auto startTime = std::chrono::steady_clock::now();
-    std::vector<Result> results;
-    results.reserve(seeds.size());
-    std::cout << "reversing end seeds..." << std::endl;
-    for (auto seed : seeds) {
-        auto result = reverseEndSeed(endTable, seed, worldSeed);
-        results.push_back(result);
-        std::cout << "end result: " << result.steps << std::endl;
-    }
-    auto execTime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime).count();
-    std::cerr << "Reversed " << seeds.size() << " end seeds in " << execTime << "ms" << std::endl;
-    return results;
-}
-
 void* mmapFile(int fd, int64_t size, int prot) {
     struct stat sb{};
     if (fstat(fd, &sb) == -1) {
@@ -317,22 +241,6 @@ void writeOverworldTable(int16_t* table) {
         }
     }
 }
-void writeEndTable(Int3* table, int64_t min, int64_t maxExclusive, int i) {
-    auto startTime = std::chrono::steady_clock::now();
-
-    for (int x = -END_CITY_BOUNDS; x <= END_CITY_BOUNDS; x++) {
-        if (x % 1000 == 0) std::cout << "x = " << x << ", i = " << i << std::endl;
-        for (int z = -END_CITY_BOUNDS; z <= END_CITY_BOUNDS; z++) {
-            auto seed = generalizedEndCitySeed(x, z);
-            auto index = seed & LOWER_36_MASK;
-            if (index >= min && index < maxExclusive) {
-                table[index - min] = Int3{x};
-            }
-        }
-    }
-    auto execTime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime).count();
-    std::cerr << "Wrote end table in " << execTime << "ms" << std::endl;
-}
 
 void bigWrite(int fd, const char* bytes, size_t size) {
     size_t written = 0;
@@ -346,73 +254,7 @@ void bigWrite(int fd, const char* bytes, size_t size) {
     }
 }
 
-void writeEndTableGpuAsync(Int3* deviceMem, int64_t chunkSizeBytes, int64_t min, int64_t maxExclusive) {
-    cudaMemset(deviceMem, 0, chunkSizeBytes);
-    const auto threadsPerBlock = 256;
-    const auto numBlocks = (TOTAL_CITIES + threadsPerBlock - 1) / threadsPerBlock;
-
-    writeToEndSeedTable<<<numBlocks, threadsPerBlock>>>(deviceMem, min, maxExclusive);
-}
-
-const Int3* getOrCreateEndCityTable() {
-    int fd = open("end_table", O_RDONLY);
-    if (fd == -1) {
-        if (errno == ENOENT) {
-            std::cerr << "end_table doesn't exist, creating it now..." << std::endl;
-            fd = open("end_table_temp", O_CREAT | O_TRUNC | O_WRONLY, 0666);
-            if (fd == -1) {
-                std::cerr << "fail xd" << std::endl;
-                exit(1);
-            }
-            if (ftruncate(fd, SIZEOF_END_TABLE) == -1) {
-                std::cerr << "Failed to set ftruncate() to " << SIZEOF_END_TABLE << std::endl;
-                exit(1);
-            }
-            constexpr int64_t chunkSize = (1LL << 36) / 32;
-            auto* buffer = new Int3[chunkSize];
-            Int3* deviceBuffer;
-            auto err = cudaMalloc(&deviceBuffer, chunkSize * sizeof(Int3));
-            if (err != cudaSuccess) {
-                std::cerr << "Failed to allocate buffer on gpu (" << cudaGetErrorString(err) << ")" << std::endl;
-                exit(1);
-            }
-            // start the computation so the first iteration has a result (this is sort of like the -1st iteration)
-            writeEndTableGpuAsync(deviceBuffer, chunkSize * sizeof(Int3), 0, chunkSize);
-            for (int i = 0; i < 32; i++) {
-                std::cout << "creating end city table " << (i + 1) << "/32" << std::endl;
-                // synchronized the call from the previous iteration
-                cudaDeviceSynchronize();
-                cudaMemcpy(buffer, deviceBuffer, chunkSize * sizeof(Int3), cudaMemcpyDeviceToHost);
-                cudaDeviceSynchronize();
-                if (i < 32 - 1) {
-                    auto min = chunkSize * (i + 1);
-                    auto max = min + chunkSize;
-                    // start the computation for the next iteration, this will run at the same time as the write to disk
-                    writeEndTableGpuAsync(deviceBuffer, chunkSize * sizeof(Int3), min, max);
-                    bigWrite(fd, (const char*) buffer, chunkSize * sizeof(Int3));
-                } else {
-                    // on the last iteration we don't need the gpu to do anything
-                    bigWrite(fd, (const char*) buffer, chunkSize * sizeof(Int3));
-                }
-            }
-            cudaFree(deviceBuffer);
-            delete[] buffer;
-            close(fd);
-            if (rename("end_table_temp", "end_table") == -1) {
-                std::cerr << "failed to rename end_table_temp to end_table" << strerror(errno) << std::endl;
-                exit(1);
-            }
-            // we created the file, the happy path should work now
-            return getOrCreateEndCityTable();
-        } else {
-            std::cerr << "Failed to open end_table (" << strerror(errno) << ")" << std::endl;
-            exit(1);
-        }
-    }
-    return (const Int3*) mmapFile(fd, SIZEOF_END_TABLE, PROT_READ);
-}
-
-int32_t reverseSeedsFromAPI(const int16_t* deviceMansionTable, const Int3* endTable) {
+int32_t reverseSeedsFromAPI(const int16_t* deviceMansionTable) {
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     sockaddr_in server_addr{};
     server_addr.sin_family = AF_INET;
@@ -440,7 +282,8 @@ int32_t reverseSeedsFromAPI(const int16_t* deviceMansionTable, const Int3* endTa
             close(sockfd);
             return 0;
         }
-        if (dimension != 0 && dimension != 1) {
+        if (dimension != 0) {
+            std::cerr << "received bad dimension " << dimension << std::endl;
             close(sockfd);
             return 0;
         }
@@ -470,12 +313,7 @@ int32_t reverseSeedsFromAPI(const int16_t* deviceMansionTable, const Int3* endTa
         for (auto& x : seeds) {
             x = be64toh(x);
         }
-        std::vector<Result> results;
-        if (dimension == 0) {
-           results = reverseOverworldSeeds(deviceMansionTable, seeds, worldSeed);
-        } else {
-            results = reverseEndSeeds(endTable, seeds, worldSeed);
-        }
+        std::vector<Result> results = reverseOverworldSeeds(deviceMansionTable, seeds, worldSeed);
         if (!writeI32be(sockfd, (int32_t) results.size())) {
             std::cerr << "Failed to results" << std::endl;
             close(sockfd);
@@ -548,23 +386,10 @@ std::vector<Result> reverseSeedsCpu(const int16_t* table, const std::vector<int6
 
 int main(int argc, char** argv) {
     printCudaVersion();
-    const Int3* endCityTable = getOrCreateEndCityTable();
-    // x=78568 z=5572
-    // end result: 6313
-    /*auto seed = generalizedEndCitySeed(78568, 5572);
-    int xOut;
-    int64_t zOut;
-    if (endValidSlow(seed, xOut, zOut, 1434823964849314312LL)) {
-        std::cout << "is end seed (x=" << xOut << " z=" << zOut << ")" << std::endl;
-    }
-    auto index = seed & LOWER_36_MASK;
-    auto x = endCityTable[index].i;
-    std::cout << x << std::endl;
-    return 0;*/
     const int16_t* deviceMansionTable = createSeedTableGpu();
     if (argc <= 1) {
         while (true) {
-            const auto count = reverseSeedsFromAPI(deviceMansionTable, endCityTable);
+            const auto count = reverseSeedsFromAPI(deviceMansionTable);
             if (count < 1000) {
                 std::this_thread::sleep_for(std::chrono::seconds{120});
             }
