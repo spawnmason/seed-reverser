@@ -56,7 +56,6 @@ constexpr int64_t TOTAL_MANSIONS = MANSIONS_IN_ROW * MANSIONS_IN_ROW;
 constexpr int64_t chunkZMultInv248 = 211541297333629LL; // https://www.wolframalpha.com/input?i=132897987541%5E-1+mod+2%5E48
 constexpr auto RAND_MASK = (1LL << 48) - 1;
 constexpr auto LOWER_32_MASK = (1LL << 32) - 1;
-constexpr auto LOWER_36_MASK = (1LL << 36) - 1;
 constexpr auto TABLE_SIZE = (1LL << 32);
 constexpr auto SIZEOF_TABLE = TABLE_SIZE * sizeof(int16_t);
 
@@ -104,10 +103,6 @@ __device__ __host__ int64_t prevSeed(int64_t seed) {
 
 __device__ __host__ int64_t reverseWoodlandZGivenX(int64_t seed48Bits, int chunkX) {
     return (((seed48Bits - 10387319 - (int64_t) chunkX * 341873128712LL)) * chunkZMultInv248) << 16 >> 16;
-}
-
-int64_t reverseEndZGivenX(int64_t seed48Bits, int chunkX) {
-    return (((seed48Bits - 10387313 - (int64_t) chunkX * 341873128712LL)) * chunkZMultInv248) << 16 >> 16;
 }
 
 __device__ __host__ bool isWoodlandSeed(const int16_t* table, int64_t seed, int& xOut, int64_t& zOut, int64_t worldSeed) {
@@ -242,18 +237,6 @@ void writeOverworldTable(int16_t* table) {
     }
 }
 
-void bigWrite(int fd, const char* bytes, size_t size) {
-    size_t written = 0;
-    while (written < size) {
-        auto w = write(fd, bytes + written, size - written);
-        if (w == -1) {
-            std::cerr << "write failed " << strerror(errno) << std::endl;
-            exit(1);
-        }
-        written += w;
-    }
-}
-
 int32_t reverseSeedsFromAPI(const int16_t* deviceMansionTable) {
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     sockaddr_in server_addr{};
@@ -339,24 +322,6 @@ int32_t reverseSeedsFromAPI(const int16_t* deviceMansionTable) {
     return totalResults;
 }
 
-
-int createEmptyFile(const char* fileName, int64_t fileSize) {
-    FILE* fp;
-    fp = fopen(fileName, "wb");
-    if(fp == NULL){
-        std::cout << "Failed to create file" << std::endl;
-        return -1; //error opening file
-    }
-    fseek(fp, fileSize-1, SEEK_SET);
-    fputc('\0', fp);
-    fclose(fp);
-    return 0; //success
-}
-
-void dumpTableToFile(const int16_t* table) {
-    std::ofstream out("mansion_table", std::ios::out | std::ios::binary | std::ios::trunc);
-    out.write((const char*)table, SIZEOF_TABLE);
-}
 
 Result reverseSeedCpu(const int16_t* table, int64_t seed) {
     const auto startSeed = seed;
